@@ -103,6 +103,45 @@ Focus on architecture and cost, not benchmark scores:
 - **🐍 Zero Dependencies**: Pure Python, runs anywhere
 - **🧪 Tested**: 45+ unit tests covering all major functionality
 
+## 🔗 Framework Integrations
+
+Drop-in Synapse backends for popular AI frameworks:
+
+### LangChain
+
+```python
+from integrations.langchain import SynapseMemory, SynapseVectorStore
+from langchain.chains import ConversationChain
+
+# Use Synapse as LangChain memory
+memory = SynapseMemory(data_dir="./memory", k=5)
+chain = ConversationChain(memory=memory, llm=your_llm)
+
+# Use Synapse as vector store
+vectorstore = SynapseVectorStore.from_texts(["doc1", "doc2"])
+```
+
+### LangGraph
+
+```python  
+from integrations.langgraph import SynapseMemoryStore, SynapseCheckpointer
+from langgraph.graph import StateGraph
+
+# Persistent agent memory
+memory = SynapseMemoryStore(data_dir="./agent_memory")
+checkpointer = SynapseCheckpointer(data_dir="./checkpoints")
+
+graph = StateGraph(AgentState)
+graph.add_node("recall", memory.as_recall_node()) 
+graph.add_node("respond", respond_fn)
+graph.add_node("remember", memory.as_remember_node())
+```
+
+Install optional dependencies:
+```bash
+pip install synapse-ai-memory[langchain]  # or [langgraph] or [all]
+```
+
 ## 🛠️ Advanced Usage
 
 ### Basic Operations

@@ -28,6 +28,9 @@ dependencies = []
 
 [project.optional-dependencies]
 embeddings = ["requests>=2.25.0"]  # For Ollama API calls
+langchain = ["langchain>=0.1.0", "langchain-core>=0.1.0"]
+langgraph = ["langgraph>=0.0.1"]
+all = ["langchain>=0.1.0", "langchain-core>=0.1.0", "langgraph>=0.0.1"]
 dev = [
     "pytest>=6.0",
     "pytest-cov",
