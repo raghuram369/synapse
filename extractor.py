@@ -1,15 +1,19 @@
-"""
-LLM-powered fact extraction for Synapse V2.
+"""LLM-powered fact extraction using a local Ollama model.
 
-Uses Ollama to distill raw conversation turns into clean, searchable facts.
-Each extracted fact becomes a separate memory with richer keyword coverage.
+Distils raw conversation turns into clean, searchable facts.  Each
+extracted fact becomes a separate memory with richer keyword coverage.
 """
+
+from __future__ import annotations
 
 import json
+import logging
 import urllib.error
 import urllib.request
 from typing import List, Optional
 from urllib.parse import urljoin
+
+logger = logging.getLogger(__name__)
 
 
 class FactExtractor:
@@ -48,7 +52,7 @@ class FactExtractor:
             facts = self._parse_response(response)
             return [fact.strip() for fact in facts if fact.strip()]
         except Exception as e:
-            print(f"Warning: Fact extraction failed for content: {e}")
+            logger.warning("Fact extraction failed: %s", e)
             return []
     
     def _build_extraction_prompt(self, content: str) -> str:

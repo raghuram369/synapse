@@ -1,4 +1,6 @@
-"""Entity graph concept extraction and query expansion helpers."""
+"""Concept extraction and query expansion via a static knowledge graph."""
+
+from __future__ import annotations
 
 import re
 from typing import List, Tuple

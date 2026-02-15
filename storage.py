@@ -1,14 +1,12 @@
-"""
-Storage layer for Synapse V2 - Append-only log with snapshots.
-Pure Python, zero external dependencies.
-"""
+"""Storage layer — append-only log with snapshots (Redis AOF/RDB style)."""
+
+from __future__ import annotations
 
 import json
 import os
-import tempfile
 import time
 from pathlib import Path
-from typing import Optional, Iterator, Dict, Any
+from typing import Any, Dict, Iterator, Optional
 
 
 class AppendLog:

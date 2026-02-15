@@ -1,16 +1,14 @@
-"""
-Native in-memory indexes for Synapse V2.
-All indexes are rebuilt on startup from storage.
-Pure Python, zero external dependencies.
-"""
+"""In-memory indexes for keyword search, concept graphs, and temporal queries."""
 
+from __future__ import annotations
+
+import bisect
 import math
 import re
 import time
-from typing import Dict, Set, List, Tuple, Optional, NamedTuple
-from dataclasses import dataclass, field
 from collections import defaultdict
-import bisect
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Set, Tuple
 
 
 # Tokenization constants

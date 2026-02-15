@@ -1,23 +1,24 @@
-"""
-Synapse Portable Memory Format (.synapse)
+"""Portable `.synapse` binary format — export, import, merge, diff.
 
-Binary file format for exporting, importing, and merging Synapse memory databases.
-Zero external dependencies. Pure Python.
-
-See FORMAT.md for the binary format specification.
+Binary file with CRC integrity, provenance tracking, and streaming reads.
+Zero external dependencies.
 """
 
+from __future__ import annotations
+
+import io
 import json
+import math
+import os
+import re
 import struct
 import time
 import zlib
-import io
-import os
-import re
-import math
-from typing import Optional, List, Dict, Any, Iterator, Tuple, Set
-from pathlib import Path
 from collections import defaultdict
+from pathlib import Path
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
+
+from exceptions import SynapseFormatError
 
 
 # ─── Constants ───────────────────────────────────────────────────────────────
@@ -67,19 +68,19 @@ def _pack_header(flags: int, timestamp: float, num_sections: int, crc: int) -> b
 def _unpack_header(data: bytes) -> Dict[str, Any]:
     """Unpack and validate the 32-byte file header."""
     if len(data) < HEADER_SIZE:
-        raise ValueError(f"Header too short: {len(data)} bytes")
+        raise SynapseFormatError(f"Header too short: {len(data)} bytes")
     
     magic = data[0:4]
     if magic != MAGIC:
         # Check for JSON fallback
         if data[0:1] == b'{':
             return {'json_fallback': True}
-        raise ValueError(f"Invalid magic bytes: {magic!r} (expected {MAGIC!r})")
+        raise SynapseFormatError(f"Invalid magic bytes: {magic!r} (expected {MAGIC!r})")
     
     major, minor, flags, ts_usec, num_sections, crc, _ = struct.unpack('>BBHQIII', data[4:28])
     
     if major > FORMAT_VERSION_MAJOR:
-        raise ValueError(f"Unsupported format version {major}.{minor} (reader supports up to {FORMAT_VERSION_MAJOR}.x)")
+        raise SynapseFormatError(f"Unsupported format version {major}.{minor} (reader supports up to {FORMAT_VERSION_MAJOR}.x)")
     
     return {
         'json_fallback': False,
@@ -119,7 +120,7 @@ def _read_record(f) -> Optional[Tuple[int, bytes]]:
         return (RECORD_END, b'')
     payload = f.read(length)
     if len(payload) < length:
-        raise ValueError(f"Truncated record: expected {length} bytes, got {len(payload)}")
+        raise SynapseFormatError(f"Truncated record: expected {length} bytes, got {len(payload)}")
     return (record_type, payload)
 
 
@@ -614,7 +615,7 @@ def import_synapse(synapse, path: str, *, deduplicate: bool = True,
     reader = SynapseReader(path)
     
     if not reader.verify_crc():
-        raise ValueError(f"CRC check failed for {path} — file may be corrupted")
+        raise SynapseFormatError(f"CRC check failed for {path} — file may be corrupted")
     
     stats = {'memories': 0, 'edges': 0, 'concepts': 0, 'episodes': 0, 'skipped_duplicates': 0}
     
@@ -751,7 +752,7 @@ def merge_synapse(synapse, path: str, *,
     reader = SynapseReader(path)
     
     if not reader.verify_crc():
-        raise ValueError(f"CRC check failed for {path}")
+        raise SynapseFormatError(f"CRC check failed for {path}")
     
     stats = {'memories_added': 0, 'memories_updated': 0, 'memories_skipped': 0,
              'edges_added': 0, 'concepts_merged': 0, 'episodes_merged': 0}

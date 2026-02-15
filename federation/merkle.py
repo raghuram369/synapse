@@ -1,5 +1,7 @@
 """Merkle tree for efficient delta detection between memory stores."""
 
+from __future__ import annotations
+
 import hashlib
 from typing import Dict, List, Set, Tuple
 

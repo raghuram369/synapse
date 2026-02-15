@@ -1,25 +1,18 @@
 #!/usr/bin/env python3
-"""
-Synapse Client Library
+"""TCP client for connecting to the Synapse daemon (*synapsed*)."""
 
-Python client for connecting to the Synapse daemon (synapsed).
-Provides a clean API for remote memory operations with auto-reconnection.
-"""
+from __future__ import annotations
 
 import json
 import socket
 import time
-from typing import List, Dict, Any, Optional, Union
+from typing import Any, Dict, List, Optional
+
+from exceptions import SynapseConnectionError, SynapseError
 
 
-class SynapseConnectionError(Exception):
-    """Connection-related errors."""
-    pass
-
-
-class SynapseRequestError(Exception):
-    """Request processing errors."""
-    pass
+class SynapseRequestError(SynapseError):
+    """Raised when the daemon returns an error response."""
 
 
 class SynapseClient:
@@ -71,14 +64,14 @@ class SynapseClient:
         if self._file:
             try:
                 self._file.close()
-            except:
+            except OSError:
                 pass
             self._file = None
-            
+
         if self._socket:
             try:
                 self._socket.close()
-            except:
+            except OSError:
                 pass
             self._socket = None
     

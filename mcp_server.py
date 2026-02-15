@@ -28,6 +28,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 import mcp.types as types
 
+from exceptions import SynapseValidationError
 from synapse import Synapse, MEMORY_TYPES, EDGE_TYPES, Memory
 
 

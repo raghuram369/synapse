@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Tests for Synapse V2 memory engine."""
+"""Tests for the Synapse memory engine."""
 
 import time
 import unittest
-from unittest.mock import patch, Mock
+from unittest.mock import patch
+
+from exceptions import SynapseValidationError
 from synapse import Synapse, DECAY_HALF_LIFE
 
 
@@ -30,7 +32,7 @@ class TestSynapseV2(unittest.TestCase):
         self.assertEqual(m.metadata["location"], "office")
 
     def test_remember_invalid_type(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaises(SynapseValidationError):
             self.s.remember("test", "invalid_type")
 
     def test_remember_with_links(self):
@@ -45,7 +47,7 @@ class TestSynapseV2(unittest.TestCase):
 
     def test_invalid_edge_type(self):
         m1 = self.s.remember("A")
-        with self.assertRaises(ValueError):
+        with self.assertRaises(SynapseValidationError):
             links = [{"target_id": m1.id, "edge_type": "bogus"}]
             self.s.remember("B", links=links)
 
@@ -294,12 +296,12 @@ class TestSynapseV2(unittest.TestCase):
     def test_link_invalid_edge_type(self):
         m1 = self.s.remember("A")
         m2 = self.s.remember("B")
-        with self.assertRaises(ValueError):
+        with self.assertRaises(SynapseValidationError):
             self.s.link(m1.id, m2.id, "invalid_type")
 
     def test_link_nonexistent_memory(self):
         m1 = self.s.remember("A")
-        with self.assertRaises(ValueError):
+        with self.assertRaises(SynapseValidationError):
             self.s.link(m1.id, 99999, "reminds_of")
 
     # ── Concepts ──
@@ -400,10 +402,10 @@ class TestSynapseV2(unittest.TestCase):
     # ── Edge Cases ──
 
     def test_empty_content(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaises(SynapseValidationError):
             self.s.remember("")
         
-        with self.assertRaises(ValueError):
+        with self.assertRaises(SynapseValidationError):
             self.s.remember("   ")  # whitespace only
 
     def test_recall_limit(self):

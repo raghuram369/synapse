@@ -1,7 +1,6 @@
-"""
-Embedding index for Synapse V2 — optional semantic similarity layer.
-Uses Ollama's nomic-embed-text for local embeddings (no API keys, no cloud).
-"""
+"""Optional embedding index using Ollama for local semantic similarity."""
+
+from __future__ import annotations
 
 import json
 import math

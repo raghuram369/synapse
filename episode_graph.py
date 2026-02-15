@@ -1,6 +1,8 @@
 """Episode graph helpers for temporal clustering of memories."""
 
-from typing import List, Optional, Dict, Any
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
 
 
 def find_or_create_episode(

@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
-"""
-Synapse CLI Tool
+"""Unified CLI for the Synapse memory engine.
 
-Unified command-line interface for Synapse memory engine:
-  - Core: remember, recall, forget, link, concepts, stats
-  - Portable Format: export, import, inspect, merge, diff
-  - Federation: serve, push, pull, sync, peers
+Sub-commands cover the core engine, portable format, and federation.
 """
+
+from __future__ import annotations
 
 import argparse
 import json
 import os
 import sys
 import time
-from typing import List, Dict, Any
+from typing import Any, Dict
 
-from client import SynapseClient, SynapseConnectionError, SynapseRequestError
+from client import SynapseClient, SynapseRequestError
+from exceptions import SynapseConnectionError
 
 
 # ─── Formatting helpers ──────────────────────────────────────────────────────
@@ -51,8 +50,9 @@ def format_stats(stats: Dict[str, Any]) -> str:
     return '\n'.join(lines)
 
 
-def _human_size(size):
-    for unit in ['B', 'KB', 'MB', 'GB']:
+def _human_size(size: int | float) -> str:
+    """Format byte count as a human-readable string."""
+    for unit in ("B", "KB", "MB", "GB"):
         if size < 1024:
             return f"{size:.1f} {unit}"
         size /= 1024

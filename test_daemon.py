@@ -10,7 +10,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from client import SynapseClient, SynapseConnectionError, SynapseRequestError
+from client import SynapseClient, SynapseRequestError
+from exceptions import SynapseConnectionError
 from synapsed import SynapseServer
 
 

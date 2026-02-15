@@ -1,44 +1,53 @@
 """
-Synapse V2 — A native memory database engine.
-Pure Python, zero external dependencies, no SQL.
+Synapse — A neuroscience-inspired memory database engine for AI agents.
 
-Based on the original Synapse but completely rewritten with:
-- Append-only log + snapshots for persistence
-- Native Python indexes for BM25 + concept matching  
-- Two-stage recall algorithm ported from SQL
+Pure Python, zero external dependencies, no SQL.  Provides BM25 keyword
+search, concept-graph expansion, optional local embeddings (Ollama), and
+an append-only log + snapshot persistence layer.
 """
 
+from __future__ import annotations
+
 import json
+import logging
 import math
 import time
-import hashlib
-import re
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Set, Any
-from pathlib import Path
+from typing import Any, Dict, List, Optional, Set
 
-from storage import MemoryStore
-from indexes import (
-    InvertedIndex, ConceptGraph, EdgeGraph, TemporalIndex, EpisodeIndex,
-    STOPWORDS
-)
-from entity_graph import extract_concepts, expand_query
-from episode_graph import close_stale_episodes, find_or_create_episode, get_episode_siblings
 from embeddings import EmbeddingIndex
+from entity_graph import extract_concepts, expand_query
+from exceptions import SynapseValidationError
 from extractor import extract_facts
+from indexes import (
+    ConceptGraph,
+    EdgeGraph,
+    EpisodeIndex,
+    InvertedIndex,
+    TemporalIndex,
+)
+from storage import MemoryStore
 
+logger = logging.getLogger(__name__)
 
-# Constants (same as V1)
-MEMORY_TYPES = {"fact", "event", "preference", "skill", "observation"}
-EDGE_TYPES = {"caused_by", "contradicts", "reminds_of", "supports", "preceded", "followed", "supersedes", "related"}
-DECAY_HALF_LIFE = 86400 * 7  # 7 days in seconds
-REINFORCE_BOOST = 0.05
-DEFAULT_EPISODE_WINDOW_SECS = 1800.0
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+MEMORY_TYPES: Set[str] = {"fact", "event", "preference", "skill", "observation"}
+EDGE_TYPES: Set[str] = {
+    "caused_by", "contradicts", "reminds_of", "supports",
+    "preceded", "followed", "supersedes", "related",
+}
+DECAY_HALF_LIFE: float = 86400.0 * 7  # 7 days in seconds
+REINFORCE_BOOST: float = 0.05
+DEFAULT_EPISODE_WINDOW_SECS: float = 1800.0
 
 
 @dataclass
 class Memory:
-    """Memory data structure."""
+    """A single memory record with temporal-decay strength."""
+
     id: Optional[int] = None
     content: str = ""
     memory_type: str = "fact"
@@ -46,23 +55,33 @@ class Memory:
     access_count: int = 0
     created_at: float = 0.0
     last_accessed: float = 0.0
-    metadata: dict = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
     consolidated: bool = False
-    summary_of: list = field(default_factory=list)
+    summary_of: List[int] = field(default_factory=list)
 
     @property
-    def effective_strength(self):
-        """Strength after temporal decay and access boost."""
+    def effective_strength(self) -> float:
+        """Strength after temporal decay and access-frequency boost."""
         age = time.time() - self.last_accessed
         decay = math.pow(0.5, age / DECAY_HALF_LIFE)
-        # Access count provides a logarithmic boost
-        access_boost = 1 + 0.1 * math.log1p(self.access_count)
+        access_boost = 1.0 + 0.1 * math.log1p(self.access_count)
         return self.strength * decay * access_boost
 
 
 class Synapse:
-    """The memory engine - pure Python, zero external dependencies."""
-    
+    """Neuroscience-inspired memory engine — pure Python, zero dependencies.
+
+    Provides BM25 keyword search, concept-graph expansion, optional local
+    embeddings via Ollama, temporal decay, episode grouping, and an
+    append-only-log persistence layer.
+
+    Example::
+
+        s = Synapse()
+        s.remember("I prefer vegetarian food")
+        results = s.recall("dietary preferences")
+    """
+
     def __init__(self, path: str = ":memory:"):
         self.path = path
         
@@ -126,27 +145,53 @@ class Synapse:
             )
             # Link memories to episodes (would need to be tracked in storage)
     
-    def remember(self, content: str, memory_type: str = "fact", 
-                 links: Optional[List] = None, metadata: Optional[Dict] = None,
-                 episode: Optional[str] = None, deduplicate: bool = True, 
-                 extract: bool = False) -> Memory:
-        """Store a new memory with optional fact extraction and deduplication."""
+    def remember(
+        self,
+        content: str,
+        memory_type: str = "fact",
+        links: Optional[List[Dict[str, Any]]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        episode: Optional[str] = None,
+        deduplicate: bool = True,
+        extract: bool = False,
+    ) -> Memory:
+        """Store a new memory with optional fact extraction and deduplication.
+
+        Args:
+            content: The text content to memorise.
+            memory_type: One of ``MEMORY_TYPES``.
+            links: Optional edges to create (list of dicts with
+                ``target_id``, ``edge_type``, and optionally ``weight``).
+            metadata: Arbitrary JSON-serialisable metadata.
+            episode: Optional episode name to group this memory into.
+            deduplicate: If *True*, create *supersedes* edges to similar
+                existing memories.
+            extract: If *True*, use an LLM to split *content* into
+                individual facts and store each separately.
+
+        Returns:
+            The newly created ``Memory`` (or the first extracted fact).
+
+        Raises:
+            SynapseValidationError: If *content* is empty or *memory_type*
+                is not recognised.
+        """
         now = time.time()
-        
+
         if not content.strip():
-            raise ValueError("Memory content cannot be empty")
-            
+            raise SynapseValidationError("Memory content cannot be empty")
         if memory_type not in MEMORY_TYPES:
-            raise ValueError(f"Invalid memory_type: {memory_type}. Must be one of {MEMORY_TYPES}")
-        
-        # Handle fact extraction
+            raise SynapseValidationError(
+                f"Invalid memory_type: {memory_type}. Must be one of {MEMORY_TYPES}"
+            )
+
         if extract:
-            return self._remember_with_extraction(content, memory_type, links, metadata, episode, deduplicate, now)
-        
-        # Use regular single content storage
-        return self._remember_single_content(content, memory_type, links, metadata, episode, deduplicate, now)
-        
-        return memory
+            return self._remember_with_extraction(
+                content, memory_type, links, metadata, episode, deduplicate, now,
+            )
+        return self._remember_single_content(
+            content, memory_type, links, metadata, episode, deduplicate, now,
+        )
     
     def _remember_with_extraction(self, content: str, memory_type: str, 
                                   links: Optional[List], metadata: Optional[Dict],
@@ -157,8 +202,7 @@ class Synapse:
             facts = extract_facts(content)
             
             if not facts:
-                # If extraction fails or returns no facts, fall back to normal storage
-                print(f"Warning: No facts extracted from content, storing as-is")
+                logger.warning("No facts extracted from content, storing as-is")
                 return self._remember_single_content(content, memory_type, links, metadata, episode, deduplicate, now)
             
             # Create memories for each extracted fact
@@ -204,8 +248,7 @@ class Synapse:
             return fact_memories[0]
             
         except Exception as e:
-            # If extraction fails entirely, fall back to normal storage
-            print(f"Warning: Fact extraction failed ({e}), storing content as-is")
+            logger.warning("Fact extraction failed (%s), storing content as-is", e)
             return self._remember_single_content(content, memory_type, links, metadata, episode, deduplicate, now)
     
     def _remember_single_content(self, content: str, memory_type: str, 
@@ -621,13 +664,19 @@ class Synapse:
         # Remove from storage
         return self.store.delete_memory(memory_id)
     
-    def link(self, source_id: int, target_id: int, edge_type: str, weight: float = 1.0):
-        """Create a link between two memories."""
+    def link(self, source_id: int, target_id: int, edge_type: str, weight: float = 1.0) -> None:
+        """Create a directed edge between two memories.
+
+        Raises:
+            SynapseValidationError: If *edge_type* is unrecognised or
+                either memory does not exist.
+        """
         if edge_type not in EDGE_TYPES:
-            raise ValueError(f"Invalid edge_type: {edge_type}. Must be one of {EDGE_TYPES}")
-            
+            raise SynapseValidationError(
+                f"Invalid edge_type: {edge_type}. Must be one of {EDGE_TYPES}"
+            )
         if source_id not in self.store.memories or target_id not in self.store.memories:
-            raise ValueError("Both source and target memories must exist")
+            raise SynapseValidationError("Both source and target memories must exist")
         
         # Add to edge graph
         self.edge_graph.add_edge(source_id, target_id, edge_type, weight)

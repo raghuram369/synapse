@@ -1,7 +1,7 @@
 """
 Comprehensive tests for the Synapse Portable Memory Format.
 
-Tests: export/import roundtrip, merge conflicts, partial exports,
+Tests: export/import round-trip, merge conflicts, partial exports,
 format versioning, large file handling, JSON fallback, CRC integrity,
 deduplication, provenance tracking, diff.
 """
@@ -16,6 +16,8 @@ import unittest
 
 # All modules are co-located now
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from exceptions import SynapseFormatError
 
 from portable import (
     SynapseWriter, SynapseReader, export_synapse, import_synapse,
@@ -64,7 +66,7 @@ class TestBinaryFormat(unittest.TestCase):
     
     def test_invalid_magic_raises(self):
         bad = b'XXXX' + b'\x00' * 28
-        with self.assertRaises(ValueError):
+        with self.assertRaises(SynapseFormatError):
             _unpack_header(bad)
     
     def test_json_fallback_detection(self):
@@ -75,7 +77,7 @@ class TestBinaryFormat(unittest.TestCase):
     def test_future_version_raises(self):
         header = bytearray(_pack_header(0, 0.0, 0, 0))
         header[4] = 99  # major version 99
-        with self.assertRaises(ValueError):
+        with self.assertRaises(SynapseFormatError):
             _unpack_header(bytes(header))
 
 

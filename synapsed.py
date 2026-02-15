@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
-"""
-Synapse Daemon (synapsed) - TCP server for Synapse V2
+"""Multi-threaded TCP daemon that serves Synapse over JSON-over-TCP."""
 
-A multi-threaded TCP daemon that serves Synapse over the network using JSON-over-TCP.
-Allows multiple clients to connect and perform memory operations concurrently.
-"""
+from __future__ import annotations
 
 import argparse
 import json
+import logging
 import signal
 import socket
 import sys
 import threading
 import time
-import traceback
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 from synapse import Synapse
 
@@ -74,7 +73,7 @@ class SynapseServer:
                     self.client_count += 1
                     client_id = self.client_count
                     
-                    print(f"📱 Client #{client_id} connected from {client_addr}")
+                    logger.info("Client #%d connected from %s", client_id, client_addr)
                     
                     # Handle client in separate thread
                     client_thread = threading.Thread(
@@ -86,10 +85,10 @@ class SynapseServer:
                     
                 except socket.error as e:
                     if self.running:  # Only log if we're still supposed to be running
-                        print(f"❌ Socket error: {e}")
+                        logger.error("Socket error: %s", e)
                         
         except Exception as e:
-            print(f"❌ Server error: {e}")
+            logger.error("Server error: %s", e)
             
         finally:
             self._cleanup()
@@ -125,16 +124,16 @@ class SynapseServer:
                     error_response = {"ok": False, "error": f"Request processing error: {e}"}
                     client_file.write(json.dumps(error_response) + '\n')
                     client_file.flush()
-                    print(f"⚠️  Client #{client_id} error: {e}")
+                    logger.warning("Client #%d error: %s", client_id, e)
                     
         except Exception as e:
-            print(f"❌ Client #{client_id} connection error: {e}")
+            logger.error("Client #%d connection error: %s", client_id, e)
             
         finally:
             try:
                 client_socket.close()
-                print(f"📱 Client #{client_id} disconnected")
-            except:
+                logger.info("Client #%d disconnected", client_id)
+            except OSError:
                 pass
     
     def _process_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
