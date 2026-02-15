@@ -240,6 +240,60 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                 description="Browse memories by concept.",
                 inputSchema=_tool_schema_browse(),
             ),
+            types.Tool(
+                name="consolidate",
+                description="Consolidate similar memories into higher-level patterns.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "min_cluster_size": {"type": "integer", "description": "Minimum cluster size", "default": 3},
+                        "similarity_threshold": {"type": "number", "description": "Similarity threshold (0-1)", "default": 0.5},
+                    },
+                },
+            ),
+            types.Tool(
+                name="fact_history",
+                description="Get temporal chain of how a fact evolved over time.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Query to find fact history for"},
+                    },
+                    "required": ["query"],
+                },
+            ),
+            types.Tool(
+                name="hot_concepts",
+                description="Get most frequently activated concepts.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "k": {"type": "integer", "description": "Number of concepts to return", "default": 5},
+                    },
+                },
+            ),
+            types.Tool(
+                name="prune",
+                description="Remove old, weak memories that haven't been accessed.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "max_age_days": {"type": "integer", "description": "Max age in days", "default": 90},
+                        "min_strength": {"type": "number", "description": "Minimum strength threshold", "default": 0.3},
+                    },
+                },
+            ),
+            types.Tool(
+                name="timeline",
+                description="Get fact changes over time for a query.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Query to get timeline for"},
+                    },
+                    "required": ["query"],
+                },
+            ),
         ]
 
     @server.call_tool()
@@ -394,6 +448,44 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                     "memories": [_memory_to_dict(m) for m in memories],
                     "returned": len(memories),
                 })
+
+            elif name == "consolidate":
+                min_cluster = _as_int(args.get("min_cluster_size", 3), field="min_cluster_size")
+                sim_thresh = _as_float(args.get("similarity_threshold", 0.5), field="similarity_threshold")
+                async with db_lock:
+                    result = syn.consolidate(min_cluster_size=min_cluster, similarity_threshold=sim_thresh)
+                    syn.flush()
+                payload = _ok_payload({"consolidated": result, "count": len(result)})
+
+            elif name == "fact_history":
+                query = args.get("query", "")
+                if not isinstance(query, str) or not query.strip():
+                    raise ValueError("query is required")
+                async with db_lock:
+                    chain = syn.fact_history(query.strip())
+                payload = _ok_payload({"chain": chain, "count": len(chain)})
+
+            elif name == "hot_concepts":
+                k = _as_int(args.get("k", 5), field="k")
+                async with db_lock:
+                    hot = syn.hot_concepts(k=k)
+                payload = _ok_payload({"concepts": [{"name": n, "score": s} for n, s in hot]})
+
+            elif name == "prune":
+                max_age = _as_int(args.get("max_age_days", 90), field="max_age_days")
+                min_str = _as_float(args.get("min_strength", 0.3), field="min_strength")
+                async with db_lock:
+                    pruned = syn.prune(max_age_days=max_age, min_strength=min_str)
+                    syn.flush()
+                payload = _ok_payload({"pruned_count": pruned})
+
+            elif name == "timeline":
+                query = args.get("query", "")
+                if not isinstance(query, str) or not query.strip():
+                    raise ValueError("query is required")
+                async with db_lock:
+                    chain = syn.fact_history(query.strip())
+                payload = _ok_payload({"timeline": chain, "count": len(chain)})
 
             else:
                 payload = _error_payload(ValueError(f"Unknown tool: {name}"), code="unknown_tool")
