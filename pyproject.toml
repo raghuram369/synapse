@@ -27,7 +27,6 @@ requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
-embeddings = ["requests>=2.25.0"]  # For Ollama API calls
 langchain = ["langchain>=0.1.0", "langchain-core>=0.1.0"]
 langgraph = ["langgraph>=0.0.1"]
 all = ["langchain>=0.1.0", "langchain-core>=0.1.0", "langgraph>=0.0.1"]
@@ -62,7 +61,6 @@ py-modules = [
     "embeddings", 
     "extractor", 
     "client", 
-    "debug"
 ]
 
 [tool.black]

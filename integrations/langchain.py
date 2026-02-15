@@ -224,11 +224,12 @@ class SynapseChatMessageHistory(BaseChatMessageHistory):
     
     def clear(self) -> None:
         """Clear all messages for this session."""
-        # For simplicity, we create a fresh instance
-        # In a production system, you'd want to selectively delete
-        data_dir = self.synapse.path if self.synapse.path != ":memory:" else None
-        self.synapse.close()
-        self.synapse = Synapse(data_dir or ":memory:")
+        # Only delete memories belonging to this session_id; do not reset shared storage.
+        all_memories = self.synapse.recall("", limit=10000)
+        for mem in all_memories:
+            md = getattr(mem, "metadata", {}) or {}
+            if md.get("session_id") == self.session_id and "message_role" in md:
+                self.synapse.forget(mem.id)
 
 
 class SynapseVectorStore(VectorStore):

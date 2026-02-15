@@ -1,8 +1,12 @@
 """
 Synapse Framework Integrations
 
-This package provides drop-in replacements for popular AI framework components
-that use Synapse as the memory backend.
+This package provides integrations for popular AI framework components that use
+Synapse as the memory backend.
+
+Note: the LangChain components are designed as drop-in style adapters. The
+LangGraph `SynapseCheckpointer` is LangGraph-compatible helper code (it does not
+subclass LangGraph's `BaseCheckpointSaver`), so it is not a drop-in replacement.
 """
 
 # LangChain integrations

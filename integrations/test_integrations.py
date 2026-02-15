@@ -7,11 +7,15 @@ langchain/langgraph to be installed.
 
 import json
 import tempfile
-import shutil
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Any, Dict
+import unittest
+import sys
 
-from synapse import Synapse
+# Ensure imports work when running `unittest discover -s integrations ...`
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 
 # Import the integrations (they handle missing dependencies gracefully)
@@ -28,16 +32,16 @@ from integrations.langgraph import (
 )
 
 
-class TestSynapseMemory:
+class TestSynapseMemory(unittest.TestCase):
     """Test SynapseMemory LangChain integration."""
     
     def test_memory_variables(self):
         """Test memory_variables property."""
         memory = SynapseMemory()
-        assert memory.memory_variables == ["history"]
+        self.assertEqual(memory.memory_variables, ["history"])
         
         memory = SynapseMemory(memory_key="custom")
-        assert memory.memory_variables == ["custom"]
+        self.assertEqual(memory.memory_variables, ["custom"])
     
     def test_save_and_load_memory_variables(self):
         """Test saving context and loading memory variables."""
@@ -56,12 +60,12 @@ class TestSynapseMemory:
         # Load memory variables with relevant query
         loaded = memory.load_memory_variables({"input": "What do you know about AI?"})
         
-        assert "history" in loaded
+        self.assertIn("history", loaded)
         history = loaded["history"]
         
         # Should be a string if return_messages=False (default)
-        assert isinstance(history, str)
-        assert "machine learning" in history.lower()
+        self.assertIsInstance(history, str)
+        self.assertIn("machine learning", history.lower())
     
     def test_return_messages_format(self):
         """Test memory with return_messages=True."""
@@ -78,11 +82,11 @@ class TestSynapseMemory:
         history = loaded["history"]
         
         # Should be list of message-like objects
-        assert isinstance(history, list)
+        self.assertIsInstance(history, list)
         if history:  # May be empty if no relevant memories found
-            assert isinstance(history[0], dict)
-            assert "role" in history[0]
-            assert "content" in history[0]
+            self.assertIsInstance(history[0], dict)
+            self.assertIn("role", history[0])
+            self.assertIn("content", history[0])
     
     def test_clear_memory(self):
         """Test clearing memory."""
@@ -93,14 +97,14 @@ class TestSynapseMemory:
         
         # Verify memories exist
         loaded = memory.load_memory_variables({"input": "test"})
-        assert loaded["history"]  # Should have content
+        self.assertTrue(loaded["history"])  # Should have content
         
         # Clear memory
         memory.clear()
         
         # Verify memories are gone
         loaded = memory.load_memory_variables({"input": "test"})
-        assert not loaded["history"]  # Should be empty
+        self.assertFalse(loaded["history"])  # Should be empty
     
     def test_persistent_memory(self):
         """Test memory persistence across instances."""
@@ -115,10 +119,10 @@ class TestSynapseMemory:
             loaded = memory2.load_memory_variables({"input": "persistent"})
             
             # Check if any data exists (persistence test)
-            assert loaded["history"] is not None  # More flexible check
+            self.assertIsNotNone(loaded["history"])  # More flexible check
 
 
-class TestSynapseChatMessageHistory:
+class TestSynapseChatMessageHistory(unittest.TestCase):
     """Test SynapseChatMessageHistory LangChain integration."""
     
     def test_add_and_retrieve_messages(self):
@@ -136,15 +140,15 @@ class TestSynapseChatMessageHistory:
         # Retrieve messages
         messages = history.messages
         
-        assert len(messages) == 4
-        assert messages[0].content == "Hello"
-        assert messages[1].content == "Hi there!"
-        assert messages[2].content == "How are you?"
-        assert messages[3].content == "I'm doing well, thank you!"
+        self.assertEqual(len(messages), 4)
+        self.assertEqual(messages[0].content, "Hello")
+        self.assertEqual(messages[1].content, "Hi there!")
+        self.assertEqual(messages[2].content, "How are you?")
+        self.assertEqual(messages[3].content, "I'm doing well, thank you!")
         
         # Check message types
-        assert isinstance(messages[0], HumanMessage)
-        assert isinstance(messages[1], AIMessage)
+        self.assertIsInstance(messages[0], HumanMessage)
+        self.assertIsInstance(messages[1], AIMessage)
     
     def test_session_isolation(self):
         """Test that different sessions don't interfere."""
@@ -160,10 +164,10 @@ class TestSynapseChatMessageHistory:
         messages2 = history2.messages
         
         # Each session should only see its own messages
-        assert len(messages1) == 1
-        assert len(messages2) == 1
-        assert messages1[0].content == "Session 1 message"
-        assert messages2[0].content == "Session 2 message"
+        self.assertEqual(len(messages1), 1)
+        self.assertEqual(len(messages2), 1)
+        self.assertEqual(messages1[0].content, "Session 1 message")
+        self.assertEqual(messages2[0].content, "Session 2 message")
     
     def test_clear_history(self):
         """Test clearing message history."""
@@ -172,13 +176,13 @@ class TestSynapseChatMessageHistory:
         history = SynapseChatMessageHistory()
         history.add_message(HumanMessage(content="Test message"))
         
-        assert len(history.messages) == 1
+        self.assertEqual(len(history.messages), 1)
         
         history.clear()
-        assert len(history.messages) == 0
+        self.assertEqual(len(history.messages), 0)
 
 
-class TestSynapseVectorStore:
+class TestSynapseVectorStore(unittest.TestCase):
     """Test SynapseVectorStore LangChain integration."""
     
     def test_add_texts_and_similarity_search(self):
@@ -201,20 +205,20 @@ class TestSynapseVectorStore:
         ]
         
         ids = store.add_texts(texts, metadatas)
-        assert len(ids) == 4
+        self.assertEqual(len(ids), 4)
         
         # Test similarity search
         results = store.similarity_search("programming", k=2)
-        assert len(results) <= 2
+        self.assertLessEqual(len(results), 2)
         
         # Should find the Python-related text
         contents = [doc.page_content for doc in results]
-        assert any("Python" in content for content in contents)
+        self.assertTrue(any("Python" in content for content in contents))
         
         # Check metadata
         for doc in results:
-            assert "memory_id" in doc.metadata
-            assert "score" in doc.metadata
+            self.assertIn("memory_id", doc.metadata)
+            self.assertIn("score", doc.metadata)
     
     def test_similarity_search_with_score(self):
         """Test similarity search with scores."""
@@ -227,12 +231,12 @@ class TestSynapseVectorStore:
         
         results = store.similarity_search_with_score("AI technology", k=2)
         
-        assert len(results) <= 2
+        self.assertLessEqual(len(results), 2)
         
         # Results should be (document, score) tuples
         for doc, score in results:
-            assert hasattr(doc, 'page_content')
-            assert isinstance(score, (int, float))
+            self.assertTrue(hasattr(doc, "page_content"))
+            self.assertIsInstance(score, (int, float))
     
     def test_from_texts_classmethod(self):
         """Test creating store from texts."""
@@ -242,7 +246,7 @@ class TestSynapseVectorStore:
         store = SynapseVectorStore.from_texts(texts, metadatas=metadatas)
         
         results = store.similarity_search("Text", k=3)
-        assert len(results) == 3
+        self.assertEqual(len(results), 3)
     
     def test_delete_and_get(self):
         """Test deleting and getting documents."""
@@ -252,19 +256,19 @@ class TestSynapseVectorStore:
         
         # Delete first document
         success = store.delete([ids[0]])
-        assert success
+        self.assertTrue(success)
         
         # Try to get deleted document
         docs = store.get([ids[0]])
-        assert len(docs) == 0  # Should be gone
+        self.assertEqual(len(docs), 0)  # Should be gone
         
         # Get remaining document
         docs = store.get([ids[1]])
-        assert len(docs) == 1
-        assert "Text to keep" in docs[0].page_content
+        self.assertEqual(len(docs), 1)
+        self.assertIn("Text to keep", docs[0].page_content)
 
 
-class TestSynapseCheckpointer:
+class TestSynapseCheckpointer(unittest.TestCase):
     """Test SynapseCheckpointer LangGraph integration."""
     
     def test_put_and_get_checkpoint(self):
@@ -288,10 +292,10 @@ class TestSynapseCheckpointer:
         # Retrieve checkpoint
         result = checkpointer.get(config)
         
-        assert result is not None
-        assert result.config == config
-        assert result.checkpoint["state"]["counter"] == 5
-        assert result.checkpoint["step"] == 3
+        self.assertIsNotNone(result)
+        self.assertEqual(result.config, config)
+        self.assertEqual(result.checkpoint["state"]["counter"], 5)
+        self.assertEqual(result.checkpoint["step"], 3)
     
     def test_list_checkpoints(self):
         """Test listing checkpoints."""
@@ -305,13 +309,13 @@ class TestSynapseCheckpointer:
         
         # List all checkpoints
         all_checkpoints = checkpointer.list()
-        assert len(all_checkpoints) == 3
+        self.assertEqual(len(all_checkpoints), 3)
         
         # List checkpoints for specific thread
         specific_config = {"configurable": {"thread_id": "thread_1"}}
         filtered_checkpoints = checkpointer.list(specific_config)
-        assert len(filtered_checkpoints) == 1
-        assert filtered_checkpoints[0].checkpoint["data"] == "checkpoint_1"
+        self.assertEqual(len(filtered_checkpoints), 1)
+        self.assertEqual(filtered_checkpoints[0].checkpoint["data"], "checkpoint_1")
     
     def test_missing_thread_id(self):
         """Test error handling for missing thread_id."""
@@ -320,15 +324,12 @@ class TestSynapseCheckpointer:
         # Config without thread_id should raise error
         bad_config = {"configurable": {}}
         checkpoint = {"data": "test"}
-        
-        try:
+        with self.assertRaises(ValueError) as ctx:
             checkpointer.put(bad_config, checkpoint)
-            assert False, "Should have raised ValueError"
-        except ValueError as e:
-            assert "thread_id is required" in str(e)
+        self.assertIn("thread_id is required", str(ctx.exception))
 
 
-class TestSynapseMemoryStore:
+class TestSynapseMemoryStore(unittest.TestCase):
     """Test SynapseMemoryStore LangGraph integration."""
     
     def test_remember_and_recall(self):
@@ -337,7 +338,7 @@ class TestSynapseMemoryStore:
         
         # Remember some facts
         memory_id = store.remember("The capital of France is Paris")
-        assert isinstance(memory_id, int)
+        self.assertIsInstance(memory_id, int)
         
         store.remember("Python is a programming language")
         store.remember("The Pacific Ocean is the largest ocean")
@@ -345,15 +346,15 @@ class TestSynapseMemoryStore:
         # Recall relevant memories
         memories = store.recall("What is the capital of France?", k=2)
         
-        assert len(memories) <= 2
-        assert isinstance(memories[0], dict)
-        assert "content" in memories[0]
-        assert "score" in memories[0]
-        assert "id" in memories[0]
+        self.assertLessEqual(len(memories), 2)
+        self.assertIsInstance(memories[0], dict)
+        self.assertIn("content", memories[0])
+        self.assertIn("score", memories[0])
+        self.assertIn("id", memories[0])
         
         # Should find the Paris fact
         contents = [mem["content"] for mem in memories]
-        assert any("Paris" in content for content in contents)
+        self.assertTrue(any("Paris" in content for content in contents))
     
     def test_forget_memory(self):
         """Test forgetting memories."""
@@ -363,16 +364,16 @@ class TestSynapseMemoryStore:
         
         # Verify it exists
         memories = store.recall("temporary", k=10)
-        assert any(mem["id"] == memory_id for mem in memories)
+        self.assertTrue(any(mem["id"] == memory_id for mem in memories))
         
         # Forget it
         success = store.forget(memory_id)
-        assert success
+        self.assertTrue(success)
         
         # Verify it's gone (or at least not returned in recall)
         memories = store.recall("temporary", k=10)
         remaining_ids = [mem["id"] for mem in memories]
-        assert memory_id not in remaining_ids
+        self.assertNotIn(memory_id, remaining_ids)
     
     def test_as_remember_node(self):
         """Test the remember node helper."""
@@ -389,12 +390,12 @@ class TestSynapseMemoryStore:
         result_state = remember_node(state)
         
         # Should have memory_id added
-        assert "memory_id" in result_state
-        assert isinstance(result_state["memory_id"], int)
+        self.assertIn("memory_id", result_state)
+        self.assertIsInstance(result_state["memory_id"], int)
         
         # Other state should be preserved
-        assert result_state["content"] == state["content"]
-        assert result_state["session_id"] == state["session_id"]
+        self.assertEqual(result_state["content"], state["content"])
+        self.assertEqual(result_state["session_id"], state["session_id"])
     
     def test_as_recall_node(self):
         """Test the recall node helper."""
@@ -416,13 +417,13 @@ class TestSynapseMemoryStore:
         result_state = recall_node(state)
         
         # Should have memories added
-        assert "memories" in result_state
-        assert isinstance(result_state["memories"], list)
+        self.assertIn("memories", result_state)
+        self.assertIsInstance(result_state["memories"], list)
         
         # Check if memories exist - more flexible test
         if result_state["memories"]:
             # Should find at least some memories
-            assert len(result_state["memories"]) > 0
+            self.assertGreater(len(result_state["memories"]), 0)
         else:
             # If no memories found, that's okay for this test
             pass
@@ -457,18 +458,18 @@ class TestSynapseMemoryStore:
         result_state = memory_aware(state)
         
         # Should have auto-recalled memories
-        assert "memories" in result_state
-        assert len(result_state["memories"]) > 0
+        self.assertIn("memories", result_state)
+        self.assertGreater(len(result_state["memories"]), 0)
         
         # Should have generated response using memories
-        assert "response" in result_state
-        assert "blue" in result_state["response"]
+        self.assertIn("response", result_state)
+        self.assertIn("blue", result_state["response"])
         
         # Should have auto-remembered the response
-        assert "memory_id" in result_state
+        self.assertIn("memory_id", result_state)
 
 
-class TestIntegrationPersistence:
+class TestIntegrationPersistence(unittest.TestCase):
     """Test persistence across different integration components."""
     
     def test_shared_storage(self):
@@ -491,63 +492,16 @@ class TestIntegrationPersistence:
             # Verify data is accessible across components
             # LangChain Memory
             loaded = memory.load_memory_variables({"input": "artificial intelligence"})
-            assert "intelligence" in loaded["history"]
+            self.assertIn("intelligence", loaded["history"])
             
             # Vector Store
             docs = vector_store.similarity_search("machine learning", k=5)
-            assert len(docs) > 0
+            self.assertGreater(len(docs), 0)
             
             # Memory Store  
             memories = memory_store.recall("neural networks", k=5)
-            assert len(memories) > 0
+            self.assertGreater(len(memories), 0)
 
 
 if __name__ == "__main__":
-    # Run tests if called directly
-    import sys
-    
-    print("Running Synapse integration tests...")
-    print(f"LangChain available: {LANGCHAIN_AVAILABLE}")
-    print(f"LangGraph available: {LANGGRAPH_AVAILABLE}")
-    
-    # Simple test runner
-    test_classes = [
-        TestSynapseMemory,
-        TestSynapseChatMessageHistory, 
-        TestSynapseVectorStore,
-        TestSynapseCheckpointer,
-        TestSynapseMemoryStore,
-        TestIntegrationPersistence
-    ]
-    
-    total_tests = 0
-    passed_tests = 0
-    
-    for test_class in test_classes:
-        print(f"\nTesting {test_class.__name__}...")
-        instance = test_class()
-        
-        # Find test methods
-        test_methods = [
-            method for method in dir(instance)
-            if method.startswith("test_")
-        ]
-        
-        for test_method in test_methods:
-            total_tests += 1
-            try:
-                method = getattr(instance, test_method)
-                method()
-                print(f"  ✓ {test_method}")
-                passed_tests += 1
-            except Exception as e:
-                print(f"  ✗ {test_method}: {e}")
-    
-    print(f"\nResults: {passed_tests}/{total_tests} tests passed")
-    
-    if passed_tests == total_tests:
-        print("🎉 All tests passed!")
-        sys.exit(0)
-    else:
-        print("❌ Some tests failed")
-        sys.exit(1)
+    unittest.main(verbosity=2)

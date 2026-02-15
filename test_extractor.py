@@ -2,8 +2,9 @@
 """Tests for the fact extraction module."""
 
 import unittest
-from unittest.mock import patch, Mock
-import requests
+from unittest.mock import patch, Mock, MagicMock
+import json
+import urllib.error
 
 from extractor import FactExtractor, extract_facts
 
@@ -93,16 +94,18 @@ Adoption has been on Caroline's mind"""
         facts = self.extractor.extract_facts("   ")
         self.assertEqual(facts, [])
 
-    @patch('extractor.requests.post')
-    def test_extract_facts_success(self, mock_post):
+    @patch("extractor.urllib.request.urlopen")
+    def test_extract_facts_success(self, mock_urlopen):
         """Test successful fact extraction."""
         # Mock successful Ollama response
-        mock_response = Mock()
-        mock_response.json.return_value = {
-            'response': 'Caroline is researching adoption agencies\nAdoption has been on Caroline\'s mind'
-        }
-        mock_response.raise_for_status.return_value = None
-        mock_post.return_value = mock_response
+        mock_response = MagicMock()
+        mock_response.__enter__.return_value = mock_response
+        mock_response.read.return_value = json.dumps(
+            {
+                "response": "Caroline is researching adoption agencies\nAdoption has been on Caroline's mind"
+            }
+        ).encode("utf-8")
+        mock_urlopen.return_value = mock_response
         
         facts = self.extractor.extract_facts("Caroline: Yeah I've been looking into adoption agencies recently, it's been on my mind a lot")
         
@@ -111,68 +114,64 @@ Adoption has been on Caroline's mind"""
         self.assertIn("Adoption has been on Caroline's mind", facts)
         
         # Verify API call
-        mock_post.assert_called_once()
-        call_args = mock_post.call_args
-        self.assertEqual(call_args[1]['json']['model'], 'test-model')
+        mock_urlopen.assert_called_once()
+        req = mock_urlopen.call_args[0][0]
+        payload = json.loads(req.data.decode("utf-8"))
+        self.assertEqual(payload["model"], "test-model")
 
-    @patch('extractor.requests.post')
-    def test_extract_facts_api_error(self, mock_post):
+    @patch("extractor.urllib.request.urlopen")
+    def test_extract_facts_api_error(self, mock_urlopen):
         """Test extraction with API error."""
-        mock_post.side_effect = requests.exceptions.RequestException("Connection failed")
+        mock_urlopen.side_effect = urllib.error.URLError("Connection failed")
         
         facts = self.extractor.extract_facts("Test content")
         
         # Should return empty list on error
         self.assertEqual(facts, [])
 
-    @patch('extractor.requests.post')
-    def test_extract_facts_invalid_json(self, mock_post):
+    @patch("extractor.urllib.request.urlopen")
+    def test_extract_facts_invalid_json(self, mock_urlopen):
         """Test extraction with invalid JSON response."""
-        mock_response = Mock()
-        mock_response.json.side_effect = ValueError("Invalid JSON")
-        mock_response.raise_for_status.return_value = None
-        mock_post.return_value = mock_response
+        mock_response = MagicMock()
+        mock_response.__enter__.return_value = mock_response
+        mock_response.read.return_value = b"{not-json"
+        mock_urlopen.return_value = mock_response
         
         facts = self.extractor.extract_facts("Test content")
         
         # Should return empty list on JSON error
         self.assertEqual(facts, [])
 
-    @patch('extractor.requests.get')
-    def test_is_available_success(self, mock_get):
+    @patch("extractor.urllib.request.urlopen")
+    def test_is_available_success(self, mock_urlopen):
         """Test availability check when Ollama is available."""
-        mock_response = Mock()
-        mock_response.json.return_value = {
-            'models': [
-                {'name': 'test-model:latest'},
-                {'name': 'other-model:latest'}
-            ]
-        }
-        mock_response.raise_for_status.return_value = None
-        mock_get.return_value = mock_response
+        mock_response = MagicMock()
+        mock_response.__enter__.return_value = mock_response
+        mock_response.read.return_value = json.dumps(
+            {"models": [{"name": "test-model:latest"}, {"name": "other-model:latest"}]}
+        ).encode("utf-8")
+        mock_urlopen.return_value = mock_response
         
         available = self.extractor.is_available()
         self.assertTrue(available)
 
-    @patch('extractor.requests.get')
-    def test_is_available_model_not_found(self, mock_get):
+    @patch("extractor.urllib.request.urlopen")
+    def test_is_available_model_not_found(self, mock_urlopen):
         """Test availability check when model is not found."""
-        mock_response = Mock()
-        mock_response.json.return_value = {
-            'models': [
-                {'name': 'other-model:latest'}
-            ]
-        }
-        mock_response.raise_for_status.return_value = None
-        mock_get.return_value = mock_response
+        mock_response = MagicMock()
+        mock_response.__enter__.return_value = mock_response
+        mock_response.read.return_value = json.dumps(
+            {"models": [{"name": "other-model:latest"}]}
+        ).encode("utf-8")
+        mock_urlopen.return_value = mock_response
         
         available = self.extractor.is_available()
         self.assertFalse(available)
 
-    @patch('extractor.requests.get')
-    def test_is_available_connection_error(self, mock_get):
+    @patch("extractor.urllib.request.urlopen")
+    def test_is_available_connection_error(self, mock_urlopen):
         """Test availability check with connection error."""
-        mock_get.side_effect = requests.exceptions.RequestException("Connection failed")
+        mock_urlopen.side_effect = urllib.error.URLError("Connection failed")
         
         available = self.extractor.is_available()
         self.assertFalse(available)

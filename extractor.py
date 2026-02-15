@@ -6,8 +6,8 @@ Each extracted fact becomes a separate memory with richer keyword coverage.
 """
 
 import json
-import requests
-import time
+import urllib.error
+import urllib.request
 from typing import List, Optional
 from urllib.parse import urljoin
 
@@ -74,20 +74,20 @@ Output only the facts, one per line. No bullets, no numbering."""
         }
         
         try:
-            response = requests.post(
-                self._generation_url, 
-                json=payload, 
-                timeout=self.timeout
+            data = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(
+                self._generation_url,
+                data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST",
             )
-            response.raise_for_status()
-            
-            result = response.json()
-            return result.get('response', '').strip()
-            
-        except requests.exceptions.RequestException as e:
-            raise RuntimeError(f"Ollama API call failed: {e}")
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+            return result.get("response", "").strip()
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
+            raise RuntimeError(f"Ollama API call failed: {e}") from e
         except json.JSONDecodeError as e:
-            raise RuntimeError(f"Invalid JSON response from Ollama: {e}")
+            raise RuntimeError(f"Invalid JSON response from Ollama: {e}") from e
     
     def _parse_response(self, response: str) -> List[str]:
         """Parse the LLM response into individual facts."""
@@ -129,14 +129,12 @@ Output only the facts, one per line. No bullets, no numbering."""
         """Check if Ollama is available and the model is loaded."""
         try:
             # Simple health check
-            response = requests.get(
-                urljoin(self.base_url + '/', 'api/tags'),
-                timeout=5.0
-            )
-            response.raise_for_status()
-            
+            url = urljoin(self.base_url + "/", "api/tags")
+            req = urllib.request.Request(url, method="GET")
+            with urllib.request.urlopen(req, timeout=5.0) as resp:
+                models_data = json.loads(resp.read().decode("utf-8"))
+
             # Check if our model is available
-            models_data = response.json()
             model_names = [model['name'] for model in models_data.get('models', [])]
             
             return any(self.model in name for name in model_names)

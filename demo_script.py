@@ -16,9 +16,9 @@ def pause(seconds=1.0):
 
 # Simulate a terminal session
 print("\033[1;32m$\033[0m ", end="")
-type_out("pip install synapse-memory")
+type_out("pip install synapse-ai-memory")
 pause(0.5)
-print("Successfully installed synapse-memory-0.1.0")
+print("Successfully installed synapse-ai-memory-0.1.0")
 pause(1.0)
 
 print()

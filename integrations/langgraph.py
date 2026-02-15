@@ -33,8 +33,15 @@ except ImportError:
 
 class SynapseCheckpointer:
     """LangGraph-compatible checkpointer using Synapse for state persistence.
-    
-    Stores conversation checkpoints in Synapse for persistence across sessions.
+
+    Important: this is NOT a drop-in replacement for LangGraph's checkpoint savers.
+    We do not subclass LangGraph's `BaseCheckpointSaver`, so you cannot pass this
+    directly to `compile(checkpointer=...)`. Use it as a small, compatible helper
+    for storing and loading checkpoints in a LangGraph-like shape.
+
+    Checkpoints are stored as Synapse memories whose content begins with a unique
+    tag: `synapse_checkpoint_{thread_id}`. Retrieval uses this tag for exact-ish
+    lookup instead of relying on BM25 matching of a JSON blob.
     """
     
     def __init__(self, data_dir: Optional[str] = None):
@@ -44,30 +51,53 @@ class SynapseCheckpointer:
             data_dir: Directory for persistent storage (None for in-memory)
         """
         self.synapse = Synapse(data_dir or ":memory:")
+
+    @staticmethod
+    def _tag(thread_id: str) -> str:
+        return f"synapse_checkpoint_{thread_id}"
+
+    @staticmethod
+    def _extract_json(content: str, tag: str) -> Optional[dict]:
+        if not content:
+            return None
+        if not content.startswith(tag):
+            return None
+        # Expected format: "{tag}\n{json}"
+        parts = content.split("\n", 1)
+        if len(parts) != 2:
+            return None
+        try:
+            return json.loads(parts[1])
+        except json.JSONDecodeError:
+            return None
         
     def get(self, config: Dict[str, Any]) -> Optional[CheckpointTuple]:
         """Load checkpoint from Synapse storage."""
         thread_id = config.get("configurable", {}).get("thread_id")
         if not thread_id:
             return None
-            
-        # Search for checkpoint with this thread_id
-        query = f"checkpoint thread_id:{thread_id}"
-        memories = self.synapse.recall(query, limit=1)
-        
-        if not memories:
+
+        tag = self._tag(thread_id)
+        # Avoid BM25-based search for exact lookups; scan and match the unique tag.
+        memories = self.synapse.recall("", limit=10000)
+        candidates = [
+            m
+            for m in memories
+            if isinstance(getattr(m, "content", None), str) and m.content.startswith(tag)
+        ]
+        if not candidates:
             return None
-            
-        memory = memories[0]
-        try:
-            checkpoint_data = json.loads(memory.content)
-            return CheckpointTuple(
-                config=config,
-                checkpoint=checkpoint_data.get("checkpoint", {}),
-                metadata=checkpoint_data.get("metadata", {})
-            )
-        except (json.JSONDecodeError, KeyError):
+        candidates.sort(key=lambda m: getattr(m, "created_at", 0), reverse=True)
+
+        checkpoint_data = self._extract_json(candidates[0].content, tag)
+        if not checkpoint_data:
             return None
+
+        return CheckpointTuple(
+            config=config,
+            checkpoint=checkpoint_data.get("checkpoint", {}),
+            metadata=checkpoint_data.get("metadata", {}),
+        )
     
     def put(self, config: Dict[str, Any], checkpoint: Dict[str, Any]) -> None:
         """Save checkpoint to Synapse storage."""
@@ -83,42 +113,59 @@ class SynapseCheckpointer:
                 "config": config
             }
         }
-        
-        # Store as JSON in Synapse
+
+        tag = self._tag(thread_id)
+
+        # Remove any existing checkpoint for this thread_id to keep get() deterministic.
+        existing = self.synapse.recall("", limit=10000)
+        for mem in existing:
+            if isinstance(getattr(mem, "content", None), str) and mem.content.startswith(tag):
+                self.synapse.forget(mem.id)
+
+        content = f"{tag}\n{json.dumps(checkpoint_data, separators=(',', ':'), sort_keys=True)}"
         self.synapse.remember(
-            json.dumps(checkpoint_data, indent=2),
+            content,
             memory_type="event",
             metadata={
                 "checkpoint_thread_id": thread_id,
-                "checkpoint_type": "langgraph_state"
-            }
+                "checkpoint_type": "langgraph_state",
+                "synapse_checkpoint_tag": tag,
+            },
         )
     
     def list(self, config: Optional[Dict[str, Any]] = None) -> List[CheckpointTuple]:
         """List all checkpoints, optionally filtered by config."""
-        query = "checkpoint langgraph_state"
-        memories = self.synapse.recall(query, limit=100)
+        thread_id_filter = None
+        if config:
+            thread_id_filter = config.get("configurable", {}).get("thread_id")
+
+        # Use the tag prefix so recall isn't dependent on JSON tokenization.
+        memories = self.synapse.recall("", limit=10000)
         
         checkpoints = []
         for memory in memories:
-            try:
-                checkpoint_data = json.loads(memory.content)
-                stored_config = checkpoint_data.get("metadata", {}).get("config", {})
-                
-                # Apply config filter if provided
-                if config:
-                    thread_id_filter = config.get("configurable", {}).get("thread_id")
-                    stored_thread_id = stored_config.get("configurable", {}).get("thread_id")
-                    if thread_id_filter and thread_id_filter != stored_thread_id:
-                        continue
-                
-                checkpoints.append(CheckpointTuple(
+            content = getattr(memory, "content", "")
+            if not isinstance(content, str):
+                continue
+            if not content.startswith("synapse_checkpoint_"):
+                continue
+
+            tag = content.split("\n", 1)[0]
+            if thread_id_filter and tag != self._tag(thread_id_filter):
+                continue
+
+            checkpoint_data = self._extract_json(content, tag)
+            if not checkpoint_data:
+                continue
+
+            stored_config = checkpoint_data.get("metadata", {}).get("config", {}) or {}
+            checkpoints.append(
+                CheckpointTuple(
                     config=stored_config,
                     checkpoint=checkpoint_data.get("checkpoint", {}),
-                    metadata=checkpoint_data.get("metadata", {})
-                ))
-            except (json.JSONDecodeError, KeyError):
-                continue
+                    metadata=checkpoint_data.get("metadata", {}),
+                )
+            )
                 
         return checkpoints
 
