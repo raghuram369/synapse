@@ -4,6 +4,8 @@
 
 ![Version](https://img.shields.io/badge/version-0.2.0-blue) ![Stats](https://img.shields.io/badge/Recall@10-62.9%25-brightgreen) ![Improvement](https://img.shields.io/badge/vs%20BM25-+9%25-blue) ![API Calls](https://img.shields.io/badge/API%20calls-0-green) ![Speed](https://img.shields.io/badge/recall-%3C1ms-lightgrey) ![Tests](https://img.shields.io/badge/tests-177%20passing-brightgreen)
 
+![Demo](demo.gif)
+
 ## 🧠 Why Synapse?
 
 Synapse delivers **competitive recall quality at zero cost, zero dependencies**. Pure Python, runs on anything from a Raspberry Pi to a server. It IS the database — like Redis or Postgres, but for AI memory.
@@ -201,18 +203,38 @@ Query → BM25 (Primary) → Concept Graph → Local Embeddings → Fused Result
 
 ## 🔗 Framework Integrations
 
-### LangChain
+Drop-in memory for the frameworks you already use. Each integration lives in [`integrations/`](integrations/) with its own README, examples, and tests.
+
+| Framework | Integration | Key Classes |
+|-----------|------------|-------------|
+| **[LangChain](integrations/langchain/)** | Chat history, retriever, memory backend | `SynapseMemory`, `SynapseChatMessageHistory`, `SynapseRetriever` |
+| **[LangGraph](integrations/langgraph/)** | Checkpointer, cross-thread memory store | `SynapseCheckpointer`, `SynapseStore` |
+| **[CrewAI](integrations/crewai/)** | Shared memory for multi-agent crews | `SynapseCrewMemory` |
+| **[Claude / Anthropic](integrations/claude/)** | Auto-memory wrapper + tool_use schema | `SynapseClaudeMemory`, `synapse_tools` |
+| **[OpenAI / ChatGPT](integrations/openai/)** | Auto-memory wrapper + function calling | `SynapseGPTMemory`, `synapse_functions` |
+
+### Quick Examples
 
 ```python
-from integrations.langchain import SynapseMemory, SynapseVectorStore
+# LangChain
+from integrations.langchain import SynapseMemory, SynapseRetriever
 memory = SynapseMemory(data_dir="./memory", k=5)
-```
 
-### LangGraph
+# LangGraph
+from integrations.langgraph import SynapseStore, SynapseCheckpointer
+store = SynapseStore(data_dir="./agent_memory")
 
-```python
-from integrations.langgraph import SynapseMemoryStore, SynapseCheckpointer
-memory = SynapseMemoryStore(data_dir="./agent_memory")
+# CrewAI
+from integrations.crewai import SynapseCrewMemory
+crew_mem = SynapseCrewMemory(synapse=synapse, crew_id="my-crew")
+
+# Claude
+from integrations.claude import SynapseClaudeMemory, synapse_tools
+claude_mem = SynapseClaudeMemory(synapse=synapse)
+
+# OpenAI
+from integrations.openai import SynapseGPTMemory, synapse_functions
+gpt_mem = SynapseGPTMemory(synapse=synapse)
 ```
 
 ## 🖥️ Daemon Mode
