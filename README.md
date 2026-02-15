@@ -213,28 +213,108 @@ Drop-in memory for the frameworks you already use. Each integration lives in [`i
 | **[Claude / Anthropic](integrations/claude/)** | Auto-memory wrapper + tool_use schema | `SynapseClaudeMemory`, `synapse_tools` |
 | **[OpenAI / ChatGPT](integrations/openai/)** | Auto-memory wrapper + function calling | `SynapseGPTMemory`, `synapse_functions` |
 
-### Quick Examples
+### Claude / Anthropic
+
+Give Claude persistent memory across conversations — your data stays local, never hits Anthropic's servers for storage.
 
 ```python
-# LangChain
+import anthropic
+from synapse import Synapse
+from integrations.claude import SynapseClaudeMemory
+
+synapse = Synapse("claude_memory")
+memory = SynapseClaudeMemory(synapse=synapse)
+client = anthropic.Anthropic()
+
+# Conversation 1
+messages = [{"role": "user", "content": "I'm allergic to shellfish and I love hiking in Colorado"}]
+context = memory.get_context(messages[-1]["content"])  # Recalls relevant memories
+response = client.messages.create(
+    model="claude-sonnet-4-20250514",
+    system=f"You have memory of past conversations:\n{context}",
+    messages=messages
+)
+memory.save_exchange(messages[-1]["content"], response.content[0].text)
+
+# Conversation 2 — days later, Claude remembers
+messages = [{"role": "user", "content": "Can you recommend a restaurant for tonight?"}]
+context = memory.get_context(messages[-1]["content"])
+# → Recalls: shellfish allergy, suggests safe restaurants
+```
+
+**As a Claude tool** — let Claude decide what to remember:
+
+```python
+from integrations.claude import synapse_tools, handle_synapse_tool
+
+response = client.messages.create(
+    model="claude-sonnet-4-20250514",
+    tools=synapse_tools,  # remember, recall, forget tools
+    messages=[{"role": "user", "content": "Remember that my daughter's birthday is March 15"}]
+)
+# Claude calls the remember tool → stored locally in Synapse
+```
+
+### OpenAI / ChatGPT
+
+Same privacy-first memory for GPT. Your conversations build persistent context without OpenAI storing anything.
+
+```python
+import openai
+from synapse import Synapse
+from integrations.openai import SynapseGPTMemory
+
+synapse = Synapse("gpt_memory")
+memory = SynapseGPTMemory(synapse=synapse)
+client = openai.OpenAI()
+
+# Conversation 1
+user_msg = "I'm a vegetarian and I work at Google on the Search team"
+context = memory.get_context(user_msg)
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[
+        {"role": "system", "content": f"You have memory of past conversations:\n{context}"},
+        {"role": "user", "content": user_msg}
+    ]
+)
+memory.save_exchange(user_msg, response.choices[0].message.content)
+
+# Conversation 2 — GPT knows your preferences
+user_msg = "What should I have for lunch?"
+context = memory.get_context(user_msg)
+# → Recalls: vegetarian preference, suggests accordingly
+```
+
+**As GPT function calls** — GPT manages its own memory:
+
+```python
+from integrations.openai import synapse_functions, handle_synapse_function
+
+response = client.chat.completions.create(
+    model="gpt-4o",
+    functions=synapse_functions,  # remember, recall, forget
+    messages=[{"role": "user", "content": "What do you remember about my food preferences?"}]
+)
+# GPT calls recall → searches local Synapse → responds with context
+```
+
+### LangChain / LangGraph / CrewAI
+
+```python
+# LangChain — drop-in memory + retriever
 from integrations.langchain import SynapseMemory, SynapseRetriever
 memory = SynapseMemory(data_dir="./memory", k=5)
+retriever = SynapseRetriever(data_dir="./memory")
 
-# LangGraph
+# LangGraph — checkpointing + cross-thread memory
 from integrations.langgraph import SynapseStore, SynapseCheckpointer
 store = SynapseStore(data_dir="./agent_memory")
+checkpointer = SynapseCheckpointer(data_dir="./checkpoints")
 
-# CrewAI
+# CrewAI — shared memory across agent crews
 from integrations.crewai import SynapseCrewMemory
-crew_mem = SynapseCrewMemory(synapse=synapse, crew_id="my-crew")
-
-# Claude
-from integrations.claude import SynapseClaudeMemory, synapse_tools
-claude_mem = SynapseClaudeMemory(synapse=synapse)
-
-# OpenAI
-from integrations.openai import SynapseGPTMemory, synapse_functions
-gpt_mem = SynapseGPTMemory(synapse=synapse)
+crew_mem = SynapseCrewMemory(synapse=synapse, crew_id="research-team")
 ```
 
 ## 🖥️ Daemon Mode
