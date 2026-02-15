@@ -172,17 +172,17 @@ Query → BM25 (Primary) → Concept Graph → Local Embeddings → Fused Result
 | **Recall@10** | **62.9%** | 57.7% | **+9.0%** |
 | **MRR** | **40.6%** | 36.7% | **+10.5%** |
 
-## 📈 Comparison
+## 📈 Why Synapse?
 
-| Feature | Synapse | Mem0 | Zep |
-|---------|---------|------|-----|
-| **LLM required** | No (optional) | Yes (every op) | Yes |
-| **Dependencies** | 0 (pure Python) | Many | Many |
-| **Cost** | $0 | API costs | Platform fee |
-| **Self-hosted** | Yes | Partial | No |
-| **Runs offline** | Yes | No | No |
-| **Portable export** | ✅ `.synapse` files | ❌ | ❌ |
-| **Federation** | ✅ P2P sync | ❌ | ❌ |
+| Feature | Synapse |
+|---------|---------|
+| **LLM required** | No (optional) |
+| **Dependencies** | 0 (pure Python) |
+| **Cost** | $0 |
+| **Self-hosted** | Yes |
+| **Runs offline** | Yes |
+| **Portable export** | ✅ `.synapse` files |
+| **Federation** | ✅ P2P sync |
 
 ## ✨ Features
 
