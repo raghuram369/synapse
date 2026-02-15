@@ -226,7 +226,7 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 This is the initial release! We'd love contributors to help with:
 
-- 📦 PyPI packaging (`pip install synapse-memory`)
+- 📦 PyPI packaging (`pip install synapse-ai-memory`)
 - 🔌 Framework integrations (LangChain, CrewAI, etc.)
 - 🧪 More benchmarks and test cases
 - 📖 Documentation and tutorials
@@ -235,7 +235,7 @@ This is the initial release! We'd love contributors to help with:
 
 ## 🚀 What's Next
 
-- [ ] PyPI package (`pip install synapse-memory`)
+- [ ] PyPI package (`pip install synapse-ai-memory`)
 - [ ] REST API server mode
 - [ ] Distributed/clustered deployments  
 - [ ] More embedding providers
