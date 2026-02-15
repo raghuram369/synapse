@@ -1,0 +1,77 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.env
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Synapse runtime data
+synapse_data/
+
+# Marketing files (not code)
+TWITTER_DRAFT.md
+
+# Benchmark data and results
+locomo_data.json
+*_results_*.json
+judge_*.json
+quick_judge_results_*.json
+LOCOMO_ANALYSIS.md
+benchmark_progress.txt
+
+# Benchmark scripts
+bench_*.py
+run_quick_judge.py
+
+# Debug files
+debug.py
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Documentation builds
+docs/_build/bench_locomo_extraction.py

@@ -1,0 +1,82 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "synapse-memory"
+version = "0.1.0"
+description = "A neuroscience-inspired memory database for AI agents. Zero dependencies. Pure Python."
+authors = [{name = "Raghuram Parvataneni"}]
+readme = "README.md"
+license = {text = "MIT"}
+keywords = ["ai", "memory", "database", "agents", "neuroscience", "bm25", "embeddings"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+embeddings = ["requests>=2.25.0"]  # For Ollama API calls
+dev = [
+    "pytest>=6.0",
+    "pytest-cov",
+    "black",
+    "isort",
+    "flake8",
+    "mypy",
+]
+
+[project.scripts]
+synapse-cli = "cli:main"
+synapsed = "synapsed:main"
+
+[project.urls]
+Homepage = "https://github.com/raghuram369/synapse"
+"Bug Reports" = "https://github.com/raghuram369/synapse/issues"
+"Source" = "https://github.com/raghuram369/synapse"
+Documentation = "https://github.com/raghuram369/synapse#readme"
+
+[tool.setuptools]
+py-modules = [
+    "synapse", 
+    "cli", 
+    "synapsed", 
+    "storage", 
+    "indexes", 
+    "entity_graph", 
+    "episode_graph", 
+    "embeddings", 
+    "extractor", 
+    "client", 
+    "debug"
+]
+
+[tool.black]
+line-length = 88
+target-version = ['py310', 'py311', 'py312', 'py313']
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+
+[tool.pytest.ini_options]
+testpaths = [".", "tests"]
+python_files = "test_*.py"
+addopts = "-v --tb=short"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
