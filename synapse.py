@@ -45,6 +45,17 @@ DEFAULT_EPISODE_WINDOW_SECS: float = 1800.0
 
 
 @dataclass
+class ScoreBreakdown:
+    """Detailed breakdown of how a memory's recall score was computed."""
+    bm25_score: float = 0.0
+    concept_score: float = 0.0
+    temporal_score: float = 0.0
+    episode_score: float = 0.0
+    embedding_score: float = 0.0
+    match_sources: List[str] = field(default_factory=list)
+
+
+@dataclass
 class Memory:
     """A single memory record with temporal-decay strength."""
 
@@ -58,6 +69,7 @@ class Memory:
     metadata: Dict[str, Any] = field(default_factory=dict)
     consolidated: bool = False
     summary_of: List[int] = field(default_factory=list)
+    score_breakdown: Optional[ScoreBreakdown] = field(default=None, repr=False)
 
     @property
     def effective_strength(self) -> float:
@@ -377,7 +389,7 @@ class Synapse:
     
     def recall(self, context: str = "", limit: int = 10,
                memory_type: Optional[str] = None, min_strength: float = 0.01,
-               temporal_boost: bool = True) -> List[Memory]:
+               temporal_boost: bool = True, explain: bool = False) -> List[Memory]:
         """
         Two-Stage Recall with adaptive blending (ported from V1):
           Stage 1A: BM25 word-index candidates  
@@ -487,6 +499,8 @@ class Synapse:
         
         # Two-signal fusion: normalize BM25 and embedding to [0,1], then blend
         blended = {}
+        # Track per-memory breakdowns when explain=True
+        breakdowns: Dict[int, ScoreBreakdown] = {}
         
         # Normalize BM25 scores to [0,1]
         bm25_max = max(bm25_scores.values()) if bm25_scores else 1.0
@@ -516,6 +530,21 @@ class Synapse:
             
             if score > 0:
                 blended[memory_id] = score
+            
+            if explain:
+                sources = []
+                if memory_id in bm25_scores:
+                    sources.append("bm25")
+                if memory_id in concept_scores:
+                    sources.append("concept_graph")
+                if memory_id in embedding_scores:
+                    sources.append("embedding")
+                breakdowns[memory_id] = ScoreBreakdown(
+                    bm25_score=bm,
+                    concept_score=cn,
+                    embedding_score=emb,
+                    match_sources=sources,
+                )
         
         if not blended:
             return []
@@ -571,6 +600,8 @@ class Synapse:
                     sibling_id in self.store.memories and 
                     not self.store.memories[sibling_id].get('consolidated', False)):
                     memory_scores[sibling_id] *= 1.05  # tiny boost, not additive
+                    if explain and sibling_id in breakdowns:
+                        breakdowns[sibling_id].episode_score = 0.05
         
         # Temporal proximity: very mild boost only for existing candidates
         if temporal_boost and top_memory_ids:
@@ -584,6 +615,8 @@ class Synapse:
                     not self.store.memories[memory_id].get('consolidated', False)):
                     if not memory_type or self.store.memories[memory_id].get('memory_type') == memory_type:
                         memory_scores[memory_id] *= 1.05
+                        if explain and memory_id in breakdowns:
+                            breakdowns[memory_id].temporal_score = 0.05
         
         # Handle supersession (demote memories that are superseded)
         all_candidate_ids = set(memory_scores.keys())
@@ -615,6 +648,12 @@ class Synapse:
         # Sort and limit
         final_results.sort(key=lambda x: x[1], reverse=True)
         result_memories = [memory for memory, _ in final_results[:limit]]
+        
+        # Attach score breakdowns if explain=True
+        if explain:
+            for memory in result_memories:
+                if memory.id in breakdowns:
+                    memory.score_breakdown = breakdowns[memory.id]
         
         # Reinforce accessed memories
         self._reinforce_memories([m.id for m in result_memories])
@@ -891,6 +930,66 @@ class Synapse:
                 self.remember(fm.content, memory_type=fm.memory_type,
                               metadata=fm.metadata, deduplicate=True)
                 local_contents.add(fm.content)
+
+    def count(self) -> int:
+        """Return total count of active (non-consolidated) memories."""
+        return sum(1 for m in self.store.memories.values()
+                   if not m.get('consolidated', False))
+
+    def list(self, limit: int = 50, offset: int = 0,
+             sort: str = "recent") -> List[Memory]:
+        """List memories without a query.
+
+        Args:
+            limit: Max memories to return.
+            offset: Number of memories to skip.
+            sort: Sort order — ``"recent"`` (last accessed),
+                ``"created"`` (creation time), or ``"access_count"``.
+
+        Returns:
+            List of ``Memory`` objects.
+        """
+        active = [
+            self._memory_data_to_object(m)
+            for m in self.store.memories.values()
+            if not m.get('consolidated', False)
+        ]
+
+        sort_keys = {
+            "recent": lambda m: m.last_accessed,
+            "created": lambda m: m.created_at,
+            "access_count": lambda m: m.access_count,
+        }
+        key_fn = sort_keys.get(sort, sort_keys["recent"])
+        active.sort(key=key_fn, reverse=True)
+        return active[offset:offset + limit]
+
+    def browse(self, concept: str, limit: int = 50,
+               offset: int = 0) -> List[Memory]:
+        """Browse memories linked to a specific concept.
+
+        Args:
+            concept: Concept name to filter by.
+            limit: Max results.
+            offset: Skip count.
+
+        Returns:
+            List of ``Memory`` objects tagged with *concept*.
+        """
+        concept_node = self.concept_graph.concepts.get(concept)
+        if concept_node is None:
+            return []
+
+        memory_ids = sorted(concept_node.memory_ids, reverse=True)
+        selected_ids = memory_ids[offset:offset + limit]
+
+        results = []
+        for mid in selected_ids:
+            if mid in self.store.memories:
+                mdata = self.store.memories[mid]
+                if not mdata.get('consolidated', False):
+                    results.append(self._memory_data_to_object(mdata))
+        return results
 
     def concepts(self) -> List[Dict[str, Any]]:
         """Return all concepts with their memory counts."""

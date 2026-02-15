@@ -73,7 +73,10 @@ def cmd_remember(args, client: SynapseClient):
 
 def cmd_recall(args, client: SynapseClient):
     try:
-        memories = client.recall(context=args.query, limit=args.limit)
+        kwargs = dict(context=args.query, limit=args.limit)
+        if getattr(args, 'explain', False):
+            kwargs['explain'] = True
+        memories = client.recall(**kwargs)
         if not memories:
             print("🔍 No memories found")
             return
@@ -82,6 +85,56 @@ def cmd_recall(args, client: SynapseClient):
             if i > 0:
                 print()
             print(format_memory(memory, show_metadata=args.metadata))
+            if getattr(args, 'explain', False) and 'score_breakdown' in memory:
+                bd = memory['score_breakdown']
+                print(f"   Score Breakdown:")
+                print(f"     BM25: {bd.get('bm25_score', 0):.3f}")
+                print(f"     Concept: {bd.get('concept_score', 0):.3f}")
+                print(f"     Temporal: {bd.get('temporal_score', 0):.3f}")
+                print(f"     Episode: {bd.get('episode_score', 0):.3f}")
+                print(f"     Embedding: {bd.get('embedding_score', 0):.3f}")
+                print(f"     Sources: {bd.get('match_sources', [])}")
+    except SynapseRequestError as e:
+        print(f"❌ Request error: {e}")
+        sys.exit(1)
+
+
+def cmd_list(args, client: SynapseClient):
+    try:
+        memories = client.list(limit=args.limit, offset=args.offset, sort=args.sort)
+        if not memories:
+            print("📋 No memories found")
+            return
+        print(f"📋 Listing {len(memories)} memories:\n")
+        for i, memory in enumerate(memories):
+            if i > 0:
+                print()
+            print(format_memory(memory))
+    except SynapseRequestError as e:
+        print(f"❌ Request error: {e}")
+        sys.exit(1)
+
+
+def cmd_count(args, client: SynapseClient):
+    try:
+        count = client.count()
+        print(f"🔢 Total memories: {count}")
+    except SynapseRequestError as e:
+        print(f"❌ Request error: {e}")
+        sys.exit(1)
+
+
+def cmd_browse(args, client: SynapseClient):
+    try:
+        memories = client.browse(concept=args.concept, limit=args.limit, offset=args.offset)
+        if not memories:
+            print(f"🏷️  No memories found for concept '{args.concept}'")
+            return
+        print(f"🏷️  {len(memories)} memories for concept '{args.concept}':\n")
+        for i, memory in enumerate(memories):
+            if i > 0:
+                print()
+            print(format_memory(memory))
     except SynapseRequestError as e:
         print(f"❌ Request error: {e}")
         sys.exit(1)
@@ -381,6 +434,19 @@ def main():
     p.add_argument('query', nargs='?', default='')
     p.add_argument('--limit', type=int, default=10)
     p.add_argument('--metadata', action='store_true')
+    p.add_argument('--explain', action='store_true', help='Show score breakdown')
+
+    p = subparsers.add_parser('list', help='List all memories')
+    p.add_argument('--limit', type=int, default=50)
+    p.add_argument('--offset', type=int, default=0)
+    p.add_argument('--sort', default='recent', choices=['recent', 'created', 'access_count'])
+
+    p = subparsers.add_parser('count', help='Count total memories')
+
+    p = subparsers.add_parser('browse', help='Browse memories by concept')
+    p.add_argument('--concept', required=True, help='Concept to browse')
+    p.add_argument('--limit', type=int, default=50)
+    p.add_argument('--offset', type=int, default=0)
 
     p = subparsers.add_parser('forget', help='Delete a memory')
     p.add_argument('id', type=int)
@@ -496,6 +562,9 @@ def main():
         'stats': cmd_stats,
         'ping': cmd_ping,
         'shutdown': cmd_shutdown,
+        'list': cmd_list,
+        'count': cmd_count,
+        'browse': cmd_browse,
     }
 
     try:

@@ -436,5 +436,74 @@ class TestSynapseV2(unittest.TestCase):
         self.assertIn(m.id, ids_low)
 
 
+    # ── Score Breakdown (explain=True) ──
+
+    def test_recall_explain_returns_breakdown(self):
+        self.s.remember("Python programming tutorial", "fact")
+        self.s.remember("Cats are fluffy animals", "fact")
+        results = self.s.recall("Python", explain=True)
+        self.assertGreater(len(results), 0)
+        first = results[0]
+        self.assertIsNotNone(first.score_breakdown)
+        bd = first.score_breakdown
+        self.assertIsInstance(bd.bm25_score, float)
+        self.assertIsInstance(bd.concept_score, float)
+        self.assertIsInstance(bd.temporal_score, float)
+        self.assertIsInstance(bd.episode_score, float)
+        self.assertIsInstance(bd.embedding_score, float)
+        self.assertIsInstance(bd.match_sources, list)
+        self.assertIn("bm25", bd.match_sources)
+
+    def test_recall_no_explain_no_breakdown(self):
+        self.s.remember("Python programming", "fact")
+        results = self.s.recall("Python", explain=False)
+        self.assertGreater(len(results), 0)
+        self.assertIsNone(results[0].score_breakdown)
+
+    # ── List / Count / Browse ──
+
+    def test_count(self):
+        self.assertEqual(self.s.count(), 0)
+        self.s.remember("First memory")
+        self.s.remember("Second memory")
+        self.assertEqual(self.s.count(), 2)
+
+    def test_list_basic(self):
+        self.s.remember("Alpha")
+        self.s.remember("Beta")
+        self.s.remember("Gamma")
+        result = self.s.list(limit=2)
+        self.assertEqual(len(result), 2)
+
+    def test_list_offset(self):
+        for i in range(5):
+            self.s.remember(f"Memory {i}")
+        page1 = self.s.list(limit=2, offset=0)
+        page2 = self.s.list(limit=2, offset=2)
+        ids1 = {m.id for m in page1}
+        ids2 = {m.id for m in page2}
+        self.assertTrue(ids1.isdisjoint(ids2))
+
+    def test_list_sort_access_count(self):
+        m1 = self.s.remember("Rarely accessed")
+        m2 = self.s.remember("Frequently accessed")
+        # Bump access count
+        self.s.store.memories[m2.id]['access_count'] = 100
+        result = self.s.list(sort="access_count")
+        self.assertEqual(result[0].id, m2.id)
+
+    def test_browse_by_concept(self):
+        self.s.remember("I love programming in Python", "fact")
+        self.s.remember("Cats are fluffy", "fact")
+        results = self.s.browse(concept="python")
+        self.assertGreater(len(results), 0)
+        for m in results:
+            self.assertIn("python", m.content.lower())
+
+    def test_browse_nonexistent_concept(self):
+        results = self.s.browse(concept="nonexistent_concept_xyz")
+        self.assertEqual(len(results), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

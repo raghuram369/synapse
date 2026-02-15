@@ -29,7 +29,7 @@ from mcp.server.stdio import stdio_server
 import mcp.types as types
 
 from exceptions import SynapseValidationError
-from synapse import Synapse, MEMORY_TYPES, EDGE_TYPES, Memory
+from synapse import Synapse, MEMORY_TYPES, EDGE_TYPES, Memory, ScoreBreakdown
 
 
 LOG = logging.getLogger("synapse-mcp")
@@ -124,8 +124,34 @@ def _tool_schema_recall() -> Dict[str, Any]:
             "query": {"type": "string", "default": "", "description": "Search query / context."},
             "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 10},
             "memory_type": {"type": "string", "enum": sorted(MEMORY_TYPES), "description": "Optional type filter."},
+            "explain": {"type": "boolean", "default": False, "description": "Include score breakdown."},
         },
         "required": ["query"],
+    }
+
+
+def _tool_schema_list() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 50},
+            "offset": {"type": "integer", "minimum": 0, "default": 0},
+            "sort": {"type": "string", "enum": ["recent", "created", "access_count"], "default": "recent"},
+        },
+    }
+
+
+def _tool_schema_browse() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "concept": {"type": "string", "description": "Concept name to browse."},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 50},
+            "offset": {"type": "integer", "minimum": 0, "default": 0},
+        },
+        "required": ["concept"],
     }
 
 
@@ -204,6 +230,16 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                 description="List concepts in the concept graph.",
                 inputSchema=_tool_schema_concepts(),
             ),
+            types.Tool(
+                name="list",
+                description="List all memories (paginated, sortable).",
+                inputSchema=_tool_schema_list(),
+            ),
+            types.Tool(
+                name="browse",
+                description="Browse memories by concept.",
+                inputSchema=_tool_schema_browse(),
+            ),
         ]
 
     @server.call_tool()
@@ -265,12 +301,23 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                     if memory_type not in MEMORY_TYPES:
                         raise ValueError(f"Invalid memory_type: {memory_type}. Must be one of {sorted(MEMORY_TYPES)}")
 
+                do_explain = bool(args.get("explain", False))
+
                 async with db_lock:
-                    memories = syn.recall(context=query, limit=limit_i, memory_type=memory_type)
+                    memories = syn.recall(context=query, limit=limit_i,
+                                          memory_type=memory_type, explain=do_explain)
+
+                mem_dicts = []
+                for m in memories:
+                    d = _memory_to_dict(m)
+                    if do_explain and m.score_breakdown is not None:
+                        from dataclasses import asdict as _asdict
+                        d["score_breakdown"] = _asdict(m.score_breakdown)
+                    mem_dicts.append(d)
 
                 payload = _ok_payload(
                     {
-                        "memories": [_memory_to_dict(m) for m in memories],
+                        "memories": mem_dicts,
                         "returned": len(memories),
                     }
                 )
@@ -319,6 +366,34 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                 async with db_lock:
                     concepts = syn.concepts()
                 payload = _ok_payload({"concepts": concepts, "returned": len(concepts)})
+
+            elif name == "list":
+                limit_i = _as_int(args.get("limit", 50), field="limit")
+                offset_i = _as_int(args.get("offset", 0), field="offset")
+                sort_str = args.get("sort", "recent")
+                if sort_str not in ("recent", "created", "access_count"):
+                    raise ValueError("sort must be one of: recent, created, access_count")
+                async with db_lock:
+                    memories = syn.list(limit=limit_i, offset=offset_i, sort=sort_str)
+                    total = syn.count()
+                payload = _ok_payload({
+                    "memories": [_memory_to_dict(m) for m in memories],
+                    "returned": len(memories),
+                    "total": total,
+                })
+
+            elif name == "browse":
+                concept = args.get("concept", "")
+                if not isinstance(concept, str) or not concept.strip():
+                    raise ValueError("concept is required")
+                limit_i = _as_int(args.get("limit", 50), field="limit")
+                offset_i = _as_int(args.get("offset", 0), field="offset")
+                async with db_lock:
+                    memories = syn.browse(concept=concept.strip(), limit=limit_i, offset=offset_i)
+                payload = _ok_payload({
+                    "memories": [_memory_to_dict(m) for m in memories],
+                    "returned": len(memories),
+                })
 
             else:
                 payload = _error_payload(ValueError(f"Unknown tool: {name}"), code="unknown_tool")

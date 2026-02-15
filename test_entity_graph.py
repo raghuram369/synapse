@@ -63,5 +63,37 @@ class TestEntityGraph(unittest.TestCase):
             s.close()
 
 
+    # ── False positive suppression tests ──
+
+    def test_merkle_trees_does_not_produce_meeting(self):
+        """'Federation sync uses Merkle trees' should NOT tag 'meeting'."""
+        concepts = extract_concepts("Federation sync uses Merkle trees for consistency")
+        concept_names = [name for name, _ in concepts]
+        self.assertNotIn("meeting", concept_names,
+                         "'sync' in technical context should not produce 'meeting'")
+
+    def test_technical_text_no_spurious_hardware(self):
+        """'Raghuram creating Synapse' should NOT tag 'hardware' (via 'memory' alias)."""
+        concepts = extract_concepts(
+            "Raghuram is creating Synapse, a memory database for AI agents"
+        )
+        concept_names = [name for name, _ in concepts]
+        # "memory database" is a technical compound — should suppress hardware match
+        self.assertNotIn("hardware", concept_names,
+                         "'memory database' should not trigger hardware concept")
+
+    def test_genuine_meeting_still_detected(self):
+        """An actual meeting reference should still be detected."""
+        concepts = extract_concepts("We have a standup meeting at 9am tomorrow")
+        concept_names = [name for name, _ in concepts]
+        self.assertIn("meeting", concept_names)
+
+    def test_genuine_hardware_still_detected(self):
+        """Actual hardware references should still be detected."""
+        concepts = extract_concepts("I bought a new GPU for my desktop workstation")
+        concept_names = [name for name, _ in concepts]
+        self.assertIn("hardware", concept_names)
+
+
 if __name__ == "__main__":
     unittest.main()

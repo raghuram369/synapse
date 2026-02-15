@@ -457,6 +457,80 @@ _CAPITALIZED_PHRASE_RE = re.compile(
 )
 
 
+
+# ── False-positive suppression ──────────────────────────────────────────────
+# Ambiguous single-word aliases that need context gating.  Each entry maps
+# an alias to a set of "technical compound" patterns — if the alias appears
+# inside one of these patterns, the match is suppressed.
+_AMBIGUOUS_ALIAS_COMPOUNDS: dict[str, re.Pattern] = {}
+
+_AMBIGUOUS_RAW: dict[str, list[str]] = {
+    # "sync" in technical context ≠ meeting
+    "sync": [
+        r"federation\s+sync", r"file\s+sync", r"data\s+sync", r"sync\s+protocol",
+        r"sync\s+engine", r"syncthing", r"rsync", r"clock\s+sync", r"time\s+sync",
+        r"sync\s+server", r"sync\s+client", r"sync\s+service", r"sync\s+layer",
+        r"sync\s+mechanism", r"git\s+sync", r"repo\s+sync", r"peer\s+sync",
+        r"bidirectional\s+sync", r"memory\s+sync",
+    ],
+    # "memory" in software/AI context ≠ hardware RAM
+    "memory": [
+        r"memory\s+database", r"memory\s+engine", r"memory\s+system",
+        r"memory\s+project", r"memory\s+store", r"memory\s+index",
+        r"memory\s+record", r"memory\s+object", r"memory\s+graph",
+        r"memory\s+layer", r"synapse\s+memory", r"in[\-\s]memory",
+        r"memory\s+for\s+ai", r"memory\s+retrieval", r"memory\s+recall",
+    ],
+    # "node" in technical context ≠ Node.js / runtime
+    "node": [
+        r"synapse\s+node", r"federation\s+node", r"peer\s+node",
+        r"graph\s+node", r"tree\s+node", r"merkle\s+node",
+        r"compute\s+node", r"cluster\s+node",
+    ],
+}
+
+for _alias, _patterns in _AMBIGUOUS_RAW.items():
+    _AMBIGUOUS_ALIAS_COMPOUNDS[_alias] = re.compile(
+        "|".join(_patterns), re.IGNORECASE
+    )
+
+# Stoplist: aliases that are too short / generic and produce false positives
+# when they appear as substrings of unrelated words.  Require whole-word match.
+_ALIAS_STOPLIST: set[str] = {
+    "r",   # the R language — too short, matches random letters
+    "go",  # Go language — too common as English word
+    "es",  # ECMAScript alias — too short
+}
+
+# Compound-word patterns that should NOT trigger a concept.
+# e.g. "Merkle" contains "er" but should not trigger anything.
+# More importantly: words that *contain* an alias as a substring but are
+# unrelated.  We handle this by requiring word-boundary matching (the
+# word-ish alias path already does token-level matching, so this mainly
+# affects the non-word regex path and single-token ambiguous aliases).
+
+
+def _is_suppressed_by_context(alias: str, text_lower: str) -> bool:
+    """Return True if the alias appears only inside a technical compound
+    that makes it a false positive for its mapped concept."""
+    pattern = _AMBIGUOUS_ALIAS_COMPOUNDS.get(alias)
+    if pattern is None:
+        return False
+    # If ANY compound pattern matches, the alias is in a technical context.
+    # Only suppress if ALL occurrences of the alias are inside compounds.
+    compound_spans = [(m.start(), m.end()) for m in pattern.finditer(text_lower)]
+    if not compound_spans:
+        return False
+    # Find all standalone occurrences of the alias
+    alias_re = re.compile(r"\b" + re.escape(alias) + r"\b", re.IGNORECASE)
+    for m in alias_re.finditer(text_lower):
+        # Check if this occurrence is inside any compound span
+        inside = any(cs <= m.start() and m.end() <= ce for cs, ce in compound_spans)
+        if not inside:
+            return False  # At least one standalone occurrence → don't suppress
+    return True  # All occurrences are inside compounds → suppress
+
+
 def extract_concepts(text: str) -> List[Tuple[str, str]]:
     """Extract (concept_name, category) tuples from text using regex and CONCEPT_MAP lookups."""
     if not text:
@@ -494,7 +568,14 @@ def extract_concepts(text: str) -> List[Tuple[str, str]]:
             hit = _WORD_ALIAS_TO_CONCEPTS.get(key)
             if not hit:
                 continue
+            # Check stoplist and context suppression for single-word aliases
+            alias_str = " ".join(key)
+            if alias_str in _ALIAS_STOPLIST:
+                break
+            suppressed = _is_suppressed_by_context(alias_str, text_lower)
             for concept_name, category in hit:
+                if suppressed:
+                    continue
                 concepts[(concept_name, category)] = concepts.get((concept_name, category), 0.0) + 1.0
             break  # don't allow shorter overlapping aliases starting at i
 
@@ -502,6 +583,10 @@ def extract_concepts(text: str) -> List[Tuple[str, str]]:
     if _NONWORD_ALIASES_RE is not None:
         for m in _NONWORD_ALIASES_RE.finditer(text_lower):
             alias = _normalize_alias(m.group(0))
+            if alias in _ALIAS_STOPLIST:
+                continue
+            if _is_suppressed_by_context(alias, text_lower):
+                continue
             for concept_name, category in _ALIASES_TO_CONCEPTS.get(alias, []):
                 concepts[(concept_name, category)] = concepts.get((concept_name, category), 0.0) + 1.0
 

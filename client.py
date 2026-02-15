@@ -138,12 +138,14 @@ class SynapseClient:
         response = self._send_request(request)
         return response["data"]
     
-    def recall(self, context: str = "", limit: int = 10) -> List[Dict[str, Any]]:
+    def recall(self, context: str = "", limit: int = 10,
+               explain: bool = False) -> List[Dict[str, Any]]:
         """Retrieve memories based on context.
         
         Args:
             context: Search context/query
             limit: Maximum number of memories to return
+            explain: Include score breakdown in results
             
         Returns:
             List of memory dictionaries
@@ -151,12 +153,33 @@ class SynapseClient:
         request = {
             "cmd": "recall", 
             "context": context,
-            "limit": limit
+            "limit": limit,
+            "explain": explain,
         }
         
         response = self._send_request(request)
         return response["data"]
-    
+
+    def list(self, limit: int = 50, offset: int = 0,
+             sort: str = "recent") -> List[Dict[str, Any]]:
+        """List memories without a query."""
+        request = {"cmd": "list", "limit": limit, "offset": offset, "sort": sort}
+        response = self._send_request(request)
+        return response["data"]
+
+    def count(self) -> int:
+        """Return total memory count."""
+        request = {"cmd": "count"}
+        response = self._send_request(request)
+        return response["data"]["count"]
+
+    def browse(self, concept: str, limit: int = 50,
+               offset: int = 0) -> List[Dict[str, Any]]:
+        """Browse memories by concept."""
+        request = {"cmd": "browse", "concept": concept, "limit": limit, "offset": offset}
+        response = self._send_request(request)
+        return response["data"]
+
     def forget(self, memory_id: int) -> bool:
         """Delete a memory.
         
