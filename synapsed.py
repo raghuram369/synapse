@@ -11,6 +11,7 @@ import socket
 import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -166,6 +167,12 @@ class SynapseServer:
                 
             elif cmd == "concepts":
                 return self._cmd_concepts(request)
+
+            elif cmd == "hot_concepts":
+                return self._cmd_hot_concepts(request)
+
+            elif cmd == "prune":
+                return self._cmd_prune(request)
                 
             elif cmd == "stats":
                 return self._cmd_stats(request)
@@ -205,25 +212,36 @@ class SynapseServer:
         """Handle recall command."""
         context = request.get('context', '')
         limit = request.get('limit', 10)
-        
+        explain = bool(request.get('explain', False))
+
         with self.synapse_lock:
-            memories = self.synapse.recall(context, limit=limit)
-            
-        return {
-            "ok": True,
-            "data": [
-                {
-                    "id": m.id,
-                    "content": m.content,
-                    "memory_type": m.memory_type,
-                    "strength": m.strength,
-                    "effective_strength": m.effective_strength,
-                    "created_at": m.created_at,
-                    "metadata": m.metadata
+            memories = self.synapse.recall(context, limit=limit, explain=explain)
+
+        data = []
+        for m in memories:
+            item = {
+                "id": m.id,
+                "content": m.content,
+                "memory_type": m.memory_type,
+                "strength": m.strength,
+                "effective_strength": m.effective_strength,
+                "created_at": m.created_at,
+                "metadata": m.metadata,
+            }
+            if explain and m.score_breakdown is not None:
+                bd = m.score_breakdown
+                item["score_breakdown"] = {
+                    "bm25_score": bd.bm25_score,
+                    "concept_score": bd.concept_score,
+                    "temporal_score": bd.temporal_score,
+                    "episode_score": bd.episode_score,
+                    "concept_activation_score": bd.concept_activation_score,
+                    "embedding_score": bd.embedding_score,
+                    "match_sources": bd.match_sources,
                 }
-                for m in memories
-            ]
-        }
+            data.append(item)
+
+        return {"ok": True, "data": data}
     
     def _cmd_forget(self, request: Dict[str, Any]) -> Dict[str, Any]:
         """Handle forget command."""
@@ -259,9 +277,30 @@ class SynapseServer:
         """Handle concepts command."""
         with self.synapse_lock:
             concepts = self.synapse.concepts()
-            
         return {"ok": True, "data": concepts}
-    
+
+    def _cmd_hot_concepts(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle hot_concepts command."""
+        k = int(request.get('k', 10))
+        with self.synapse_lock:
+            hot = self.synapse.hot_concepts(k=k)
+        return {"ok": True, "data": [[name, strength] for name, strength in hot]}
+
+    def _cmd_prune(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle prune command."""
+        min_strength = float(request.get('min_strength', 0.1))
+        min_access = int(request.get('min_access', 0))
+        max_age_days = float(request.get('max_age_days', 90))
+        dry_run = bool(request.get('dry_run', True))
+        with self.synapse_lock:
+            pruned = self.synapse.prune(
+                min_strength=min_strength,
+                min_access=min_access,
+                max_age_days=max_age_days,
+                dry_run=dry_run,
+            )
+        return {"ok": True, "data": pruned}
+
     def _cmd_stats(self, request: Dict[str, Any]) -> Dict[str, Any]:
         """Handle stats command."""
         with self.synapse_lock:

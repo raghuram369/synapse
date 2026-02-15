@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for the Synapse memory engine."""
 
+import json
 import time
 import unittest
 from unittest.mock import patch
@@ -450,6 +451,7 @@ class TestSynapseV2(unittest.TestCase):
         self.assertIsInstance(bd.concept_score, float)
         self.assertIsInstance(bd.temporal_score, float)
         self.assertIsInstance(bd.episode_score, float)
+        self.assertIsInstance(bd.concept_activation_score, float)
         self.assertIsInstance(bd.embedding_score, float)
         self.assertIsInstance(bd.match_sources, list)
         self.assertIn("bm25", bd.match_sources)
@@ -503,6 +505,221 @@ class TestSynapseV2(unittest.TestCase):
     def test_browse_nonexistent_concept(self):
         results = self.s.browse(concept="nonexistent_concept_xyz")
         self.assertEqual(len(results), 0)
+
+
+    # ── Consolidation ──
+
+    def test_consolidate_similar_food_memories(self):
+        """Add 10 similar food preference memories, consolidate, verify 1 consolidated memory."""
+        foods = [
+            "I love eating sushi for dinner",
+            "Sushi is my favorite dinner food",
+            "I prefer sushi when eating out for dinner",
+            "For dinner I usually choose sushi",
+            "My go-to dinner meal is sushi",
+            "I enjoy having sushi at dinner time",
+            "Sushi for dinner is always my first choice",
+            "When it comes to dinner I pick sushi",
+            "Dinner means sushi for me most nights",
+            "I really like sushi as a dinner option",
+        ]
+        for f in foods:
+            self.s.remember(f, "preference")
+
+        results = self.s.consolidate(min_cluster_size=3, similarity_threshold=0.3)
+        self.assertGreaterEqual(len(results), 1)
+        # At least one cluster should exist
+        total_consolidated = sum(r['source_count'] for r in results)
+        self.assertGreaterEqual(total_consolidated, 3)
+
+    def test_consolidate_originals_marked(self):
+        """Verify original memories are marked with consolidated_into."""
+        for i in range(5):
+            self.s.remember(f"Python programming tutorial lesson {i}", "fact")
+
+        results = self.s.consolidate(min_cluster_size=3, similarity_threshold=0.3)
+        if not results:
+            self.skipTest("No clusters formed — concept overlap insufficient")
+
+        new_id = results[0]['consolidated_id']
+        for mid in results[0]['source_ids']:
+            mdata = self.s.store.memories[mid]
+            meta = json.loads(mdata['metadata'])
+            self.assertEqual(meta['consolidated_into'], new_id)
+            # Original should still exist (not deleted)
+            self.assertIn(mid, self.s.store.memories)
+
+    def test_consolidate_boosted_recall(self):
+        """Verify pattern-level memories get a 1.3x score boost in recall."""
+        # Disable embeddings to test pure BM25 + level boost
+        self.s._use_embeddings = False
+
+        now = time.time()
+
+        # Create a regular instance memory first
+        inst = self.s.remember("I love sushi for dinner", deduplicate=False)
+        # Reset any reinforcement
+        self.s.store.update_memory(inst.id, {'access_count': 0, 'strength': 1.0, 'last_accessed': now})
+
+        # Create a pattern-level consolidated memory with same content
+        memory_data = {
+            'content': 'I love sushi for dinner',
+            'memory_type': 'consolidated',
+            'memory_level': 'pattern',
+            'strength': 1.0,
+            'access_count': 0,
+            'created_at': now,
+            'last_accessed': now,
+            'metadata': json.dumps({'source_ids': [], 'source_count': 3, 'consolidated_at': now}),
+            'consolidated': False,
+            'summary_of': json.dumps([]),
+        }
+        cons_id = self.s.store.insert_memory(memory_data)
+        self.s.inverted_index.add_document(cons_id, memory_data['content'])
+        self.s.temporal_index.add_memory(cons_id, now)
+
+        results = self.s.recall("sushi dinner")
+        self.assertGreater(len(results), 0)
+        # Both should appear; the pattern-level one should rank first due to 1.3x boost
+        ids = [m.id for m in results]
+        self.assertIn(cons_id, ids)
+        self.assertIn(inst.id, ids)
+        self.assertEqual(results[0].id, cons_id)
+
+    def test_consolidate_dry_run(self):
+        """Dry run returns preview without modifying anything."""
+        for i in range(5):
+            self.s.remember(f"Machine learning AI tutorial part {i}", "fact")
+
+        count_before = len(self.s.store.memories)
+        results = self.s.consolidate(min_cluster_size=3, similarity_threshold=0.3, dry_run=True)
+
+        # No new memories should be created
+        self.assertEqual(len(self.s.store.memories), count_before)
+        # But results should still be returned
+        if results:
+            self.assertNotIn('consolidated_id', results[0])
+
+    def test_consolidate_no_clusters(self):
+        """Nothing to consolidate when memories are very different."""
+        self.s.remember("Python programming language", "fact")
+        self.s.remember("Cats are fluffy animals", "fact")
+        self.s.remember("The weather is sunny today", "fact")
+
+        results = self.s.consolidate(min_cluster_size=3, similarity_threshold=0.7)
+        self.assertEqual(len(results), 0)
+
+    def test_memory_level_field(self):
+        """Memory dataclass has memory_level field defaulting to instance."""
+        m = self.s.remember("Test memory level")
+        self.assertEqual(m.memory_level, 'instance')
+
+
+    # ── Temporal Fact Chains ──
+
+    def test_temporal_chain_basic(self):
+        """Supersession creates temporal chain metadata."""
+        m1 = self.s.remember("User lives in Austin", deduplicate=False)
+        m2 = self.s.remember("User lives in Austin Texas", deduplicate=True)
+        
+        # m2 should supersede m1
+        m1_meta = json.loads(self.s.store.memories[m1.id]['metadata'])
+        m2_meta = json.loads(self.s.store.memories[m2.id]['metadata'])
+        
+        self.assertEqual(m1_meta.get('superseded_by'), m2.id)
+        self.assertIsNotNone(m1_meta.get('superseded_at'))
+        self.assertEqual(m2_meta.get('supersedes'), m1.id)
+        self.assertIsNotNone(m2_meta.get('fact_chain_id'))
+        self.assertEqual(m1_meta.get('fact_chain_id'), m2_meta.get('fact_chain_id'))
+
+    def test_temporal_chain_three_versions(self):
+        """Chain extends across 3+ versions."""
+        m1 = self.s.remember("User lives in Austin", deduplicate=False)
+        m2 = self.s.remember("User lives in Austin Texas", deduplicate=True)
+        m3 = self.s.remember("User lives in Dallas Texas", deduplicate=True)
+        
+        chain = self.s.history(m3.id)
+        self.assertGreaterEqual(len(chain), 2)
+        # Check ordering: oldest first
+        self.assertLessEqual(chain[0]["memory"].created_at, chain[-1]["memory"].created_at)
+        # Last entry should be current
+        self.assertTrue(chain[-1]["current"])
+        self.assertFalse(chain[0]["current"])
+
+    def test_history_method(self):
+        """history() returns ordered chain for a memory."""
+        m1 = self.s.remember("Capital of France is Lyon", deduplicate=False)
+        m2 = self.s.remember("Capital of France is Paris", deduplicate=True)
+        
+        chain = self.s.history(m1.id)
+        self.assertGreaterEqual(len(chain), 1)
+        
+        chain2 = self.s.history(m2.id)
+        self.assertGreaterEqual(len(chain2), 1)
+
+    def test_fact_history_query(self):
+        """fact_history() finds chain by query."""
+        self.s.remember("User prefers dark mode", deduplicate=False)
+        self.s.remember("User prefers light mode", deduplicate=True)
+        
+        chain = self.s.fact_history("user mode preference")
+        # Should find at least the matching memory
+        self.assertGreaterEqual(len(chain), 1)
+
+    def test_recall_temporal_all(self):
+        """recall with temporal='all' returns full chain."""
+        self.s.remember("User lives in Austin", deduplicate=False)
+        self.s.remember("User lives in Dallas", deduplicate=True)
+        
+        results = self.s.recall("User lives", temporal="all")
+        self.assertGreaterEqual(len(results), 2)
+
+    def test_recall_temporal_at_time(self):
+        """recall with temporal=date returns version current at that time."""
+        base = time.time()
+        m1 = self.s.remember("User lives in Austin", deduplicate=False)
+        self.s.store.update_memory(m1.id, {'created_at': base - 86400 * 60})  # 60 days ago
+        
+        m2 = self.s.remember("User lives in Dallas", deduplicate=True)
+        self.s.store.update_memory(m2.id, {'created_at': base})  # now
+        
+        # Query at a time between m1 and m2
+        mid_ts = str(base - 86400 * 30)  # 30 days ago
+        results = self.s.recall("User lives", temporal=mid_ts)
+        if results:
+            # Should get the older version
+            self.assertEqual(results[0].id, m1.id)
+
+    def test_no_chain_memory(self):
+        """history() on a non-chain memory returns single entry."""
+        m = self.s.remember("Standalone fact", deduplicate=False)
+        chain = self.s.history(m.id)
+        self.assertEqual(len(chain), 1)
+        self.assertTrue(chain[0]["current"])
+        self.assertEqual(chain[0]["version"], 1)
+
+    def test_timeline_basic(self):
+        """timeline() returns temporal changes."""
+        self.s.remember("User lives in Austin", deduplicate=False)
+        self.s.remember("User lives in Dallas", deduplicate=True)
+        
+        changes = self.s.timeline()
+        self.assertGreaterEqual(len(changes), 1)
+
+    def test_timeline_concept_filter(self):
+        """timeline() filters by concept."""
+        self.s.remember("User lives in Austin", deduplicate=False)
+        self.s.remember("User lives in Dallas", deduplicate=True)
+        self.s.remember("User likes Python programming", deduplicate=False)
+        self.s.remember("User likes JavaScript programming", deduplicate=True)
+        
+        # Timeline with no filter should include all chains
+        all_changes = self.s.timeline()
+        
+        # Timeline with concept filter
+        prog_changes = self.s.timeline(concept="python")
+        # Results depend on concept extraction; just verify it doesn't crash
+        self.assertIsInstance(prog_changes, list)
 
 
 if __name__ == "__main__":

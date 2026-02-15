@@ -218,14 +218,29 @@ class SynapseClient:
         self._send_request(request)
     
     def concepts(self) -> List[Dict[str, Any]]:
-        """Get all concepts with their memory counts.
-        
-        Returns:
-            List of concept dictionaries
-        """
+        """Get all concepts with their memory counts."""
         request = {"cmd": "concepts"}
         response = self._send_request(request)
         return response["data"]
+
+    def hot_concepts(self, k: int = 10) -> List[tuple[str, float]]:
+        """Get the top-k most active concepts."""
+        request = {"cmd": "hot_concepts", "k": k}
+        response = self._send_request(request)
+        return [tuple(x) for x in response["data"]]
+
+    def prune(self, *, min_strength: float = 0.1, min_access: int = 0,
+              max_age_days: float = 90, dry_run: bool = True) -> List[int]:
+        """Auto-prune weak, old memories."""
+        request = {
+            "cmd": "prune",
+            "min_strength": min_strength,
+            "min_access": min_access,
+            "max_age_days": max_age_days,
+            "dry_run": dry_run,
+        }
+        response = self._send_request(request)
+        return list(response["data"])
     
     def stats(self) -> Dict[str, Any]:
         """Get server statistics.

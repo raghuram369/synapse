@@ -2,7 +2,7 @@
 
 **Zero LLM calls. Pure Python. Runs anywhere. Export, share, federate.**
 
-![Version](https://img.shields.io/badge/version-0.2.0-blue) ![Stats](https://img.shields.io/badge/Recall@10-62.9%25-brightgreen) ![Improvement](https://img.shields.io/badge/vs%20BM25-+9%25-blue) ![API Calls](https://img.shields.io/badge/API%20calls-0-green) ![Speed](https://img.shields.io/badge/recall-%3C1ms-lightgrey) ![Tests](https://img.shields.io/badge/tests-177%20passing-brightgreen)
+![Version](https://img.shields.io/badge/version-0.3.0-blue) ![Stats](https://img.shields.io/badge/Recall@10-62.9%25-brightgreen) ![Improvement](https://img.shields.io/badge/vs%20BM25-+9%25-blue) ![API Calls](https://img.shields.io/badge/API%20calls-0-green) ![Speed](https://img.shields.io/badge/recall-%3C1ms-lightgrey) ![Tests](https://img.shields.io/badge/tests-152%20passing-brightgreen)
 
 ![Demo](demo.gif)
 
@@ -135,6 +135,57 @@ synapse peers http://peer:9470
 - **LAN discovery** — automatic peer discovery via UDP broadcast
 - **Binary wire format** — uses the `.synapse` portable format for efficient transfer
 
+## 🔬 Research-Inspired Features (v0.3.0)
+
+Synapse v0.3.0 adds four neuroscience-inspired features for smarter, self-maintaining memory:
+
+### Memory Consolidation
+
+Like sleep consolidation in the brain, Synapse clusters similar memories into higher-level patterns:
+
+```python
+s = Synapse()
+for dish in ["pasta carbonara", "risotto", "lasagna", "gnocchi", "ravioli"]:
+    s.remember(f"I love {dish}")
+
+# Consolidate similar memories into patterns
+result = s.consolidate(min_cluster_size=3, similarity_threshold=0.5)
+# → Creates a "pattern" memory summarizing the cluster
+```
+
+### Temporal Fact Chains
+
+Track how facts evolve over time. When new information supersedes old, Synapse maintains a history:
+
+```python
+s.remember("I live in Austin")
+s.remember("I moved to Denver")  # supersedes Austin
+
+chain = s.fact_history("where do I live")
+# → Returns the chain of changes with timestamps
+```
+
+### Concept Activation Tracking
+
+Frequently accessed concepts become "hot" — the more you recall a topic, the stronger it gets:
+
+```python
+for _ in range(5):
+    s.recall("food preferences")
+
+hot = s.hot_concepts(k=5)
+# → [('food', 0.89), ('preferences', 0.45), ...]
+```
+
+### Auto-Prune
+
+Clean up weak, stale memories that haven't been accessed:
+
+```python
+pruned = s.prune(max_age_days=90, min_strength=0.3)
+# → Removes memories below threshold, returns count
+```
+
 ## 🏗️ Architecture
 
 Synapse uses a neuroscience-inspired **three-stage memory system**:
@@ -199,7 +250,7 @@ Query → BM25 (Primary) → Concept Graph → Local Embeddings → Fused Result
 - **🌐 Federation**: P2P sync via Merkle trees, vector clocks, namespace filtering
 - **🔐 Auth**: Bearer token authentication for federation peers
 - **🐍 Zero Dependencies**: Pure Python, runs anywhere
-- **🧪 Tested**: 125 unit tests covering all major functionality
+- **🧪 Tested**: 152 unit tests covering all major functionality
 
 ## 🔗 Framework Integrations
 
@@ -331,7 +382,7 @@ synapse recall "John meeting"
 python3 -m unittest test_synapse test_portable test_federation test_entity_graph test_episode_graph -v
 ```
 
-All 125 tests pass.
+All 152 tests pass.
 
 ## 📝 License
 

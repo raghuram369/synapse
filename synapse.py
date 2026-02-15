@@ -34,7 +34,8 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-MEMORY_TYPES: Set[str] = {"fact", "event", "preference", "skill", "observation"}
+MEMORY_TYPES: Set[str] = {"fact", "event", "preference", "skill", "observation", "consolidated"}
+MEMORY_LEVELS: Set[str] = {"instance", "pattern", "profile"}
 EDGE_TYPES: Set[str] = {
     "caused_by", "contradicts", "reminds_of", "supports",
     "preceded", "followed", "supersedes", "related",
@@ -47,10 +48,12 @@ DEFAULT_EPISODE_WINDOW_SECS: float = 1800.0
 @dataclass
 class ScoreBreakdown:
     """Detailed breakdown of how a memory's recall score was computed."""
+
     bm25_score: float = 0.0
     concept_score: float = 0.0
     temporal_score: float = 0.0
     episode_score: float = 0.0
+    concept_activation_score: float = 0.0
     embedding_score: float = 0.0
     match_sources: List[str] = field(default_factory=list)
 
@@ -62,6 +65,7 @@ class Memory:
     id: Optional[int] = None
     content: str = ""
     memory_type: str = "fact"
+    memory_level: str = "instance"
     strength: float = 1.0
     access_count: int = 0
     created_at: float = 0.0
@@ -268,17 +272,19 @@ class Synapse:
                                  episode: Optional[str], deduplicate: bool, now: float) -> Memory:
         """Store a single piece of content as a memory (extracted from original remember logic)."""
         # Check for duplicates if requested
-        similar_memories = []
+        similar_memories: List[Memory] = []
+        supersedes_target: Optional[Memory] = None
         if deduplicate:
             similar_memories = self._find_similar_memories(content)
+            # For temporal fact chains, keep supersession linear by picking the best match.
             if similar_memories:
-                # Create supersedes edges to similar memories
-                pass  # Will implement after creating the memory
+                supersedes_target = similar_memories[0]
         
         # Create memory data
         memory_data = {
             'content': content,
             'memory_type': memory_type,
+            'memory_level': 'instance',
             'strength': 1.0,
             'access_count': 0,
             'created_at': now,
@@ -326,10 +332,31 @@ class Synapse:
                     if target_id:
                         self.link(memory_id, target_id, edge_type, weight)
         
-        # Handle supersession for similar memories
-        if deduplicate and similar_memories:
-            for similar_memory in similar_memories:
-                self.link(memory_id, similar_memory.id, "supersedes", 1.0)
+        # Handle supersession for similar memory (temporal fact chain)
+        if deduplicate and supersedes_target is not None:
+            self.link(memory_id, supersedes_target.id, "supersedes", 1.0)
+            
+            # Build temporal chain metadata
+            old_meta = json.loads(self.store.memories[supersedes_target.id].get('metadata', '{}'))
+            old_meta['superseded_by'] = memory_id
+            old_meta['superseded_at'] = now
+            self.store.update_memory(supersedes_target.id, {'metadata': json.dumps(old_meta)})
+            
+            # Determine chain id: extend existing chain or start a new one
+            chain_id = old_meta.get('fact_chain_id', f"chain-{supersedes_target.id}")
+            
+            new_meta = metadata or {}
+            new_meta['supersedes'] = supersedes_target.id
+            new_meta['fact_chain_id'] = chain_id
+            metadata = new_meta
+            
+            # If old memory didn't have a chain id yet, give it one
+            if 'fact_chain_id' not in old_meta:
+                old_meta['fact_chain_id'] = chain_id
+                self.store.update_memory(supersedes_target.id, {'metadata': json.dumps(old_meta)})
+            
+            # Update the stored metadata for the new memory
+            self.store.update_memory(memory_id, {'metadata': json.dumps(metadata)})
         
         # Periodic maintenance
         self._pending_commits += 1
@@ -341,6 +368,7 @@ class Synapse:
             id=memory_id,
             content=content,
             memory_type=memory_type,
+            memory_level='instance',
             strength=1.0,
             access_count=0,
             created_at=now,
@@ -389,7 +417,8 @@ class Synapse:
     
     def recall(self, context: str = "", limit: int = 10,
                memory_type: Optional[str] = None, min_strength: float = 0.01,
-               temporal_boost: bool = True, explain: bool = False) -> List[Memory]:
+               temporal_boost: bool = True, explain: bool = False,
+               temporal: Optional[str] = None) -> List[Memory]:
         """
         Two-Stage Recall with adaptive blending (ported from V1):
           Stage 1A: BM25 word-index candidates  
@@ -397,10 +426,31 @@ class Synapse:
           Stage 2: Normalize, blend, apply effective strength, edge/episode expansion
         """
         now = time.time()
-        
+
+        # Temporal fact-chain recall modes.
+        # - None / "latest": default behaviour (current facts)
+        # - "all": return the full fact chain for the best match (oldest -> newest)
+        # - date/timestamp string: return the version that was current at that point in time
+        if temporal is not None and temporal != "latest":
+            # Find the best matching current memory first, then resolve within its chain.
+            base = self.recall(context=context, limit=1, memory_type=memory_type,
+                               min_strength=min_strength, temporal_boost=temporal_boost,
+                               explain=explain, temporal=None)
+            if not base:
+                return []
+            head = base[0]
+            chain = self.history(head.id)
+            if temporal == "all":
+                return [entry["memory"] for entry in chain]
+            at_ts = self._parse_temporal_arg(temporal)
+            if at_ts is None:
+                return [head]
+            resolved = self._resolve_chain_at(chain, at_ts)
+            return [resolved] if resolved is not None else []
+
         # Tokenize query
         query_tokens = self.inverted_index.tokenize_for_query(context) if context else []
-        
+
         # No tokens: return by effective strength
         if not query_tokens:
             all_memories = []
@@ -497,40 +547,47 @@ class Synapse:
         if c_max <= 0:
             c_max = 1.0
         
-        # Two-signal fusion: normalize BM25 and embedding to [0,1], then blend
-        blended = {}
+        # Build per-signal components (all normalized to ~[0,1])
+        lexical_scores: Dict[int, float] = {}
+        concept_norms: Dict[int, float] = {}
+
         # Track per-memory breakdowns when explain=True
         breakdowns: Dict[int, ScoreBreakdown] = {}
-        
+
         # Normalize BM25 scores to [0,1]
         bm25_max = max(bm25_scores.values()) if bm25_scores else 1.0
-        if bm25_max <= 0: bm25_max = 1.0
-        
+        if bm25_max <= 0:
+            bm25_max = 1.0
+
         # Determine embedding weight based on query characteristics
         # Short queries benefit more from embeddings; long specific queries favor BM25
         if embedding_scores:
             if n_tokens <= 3:
-                emb_weight = 0.4   # short query: embeddings matter more
+                emb_weight = 0.4
             elif n_tokens <= 6:
                 emb_weight = 0.3
             else:
-                emb_weight = 0.2   # long query: BM25 dominates
+                emb_weight = 0.2
             bm_weight = 1.0 - emb_weight
         else:
             bm_weight = 1.0
             emb_weight = 0.0
-        
+
         for memory_id in all_ids:
-            bm = bm25_scores.get(memory_id, 0.0) / bm25_max  # normalized 0-1
-            cn = concept_scores.get(memory_id, 0.0) / c_max   # normalized 0-1
-            emb = embedding_scores.get(memory_id, 0.0)         # already 0-1 (cosine)
-            
-            # Fuse: weighted combination of BM25 and embedding
-            score = bm * bm_weight + emb * emb_weight + cn * concept_weight * 0.1
-            
-            if score > 0:
-                blended[memory_id] = score
-            
+            bm = bm25_scores.get(memory_id, 0.0) / bm25_max  # 0-1
+            cn = concept_scores.get(memory_id, 0.0) / c_max   # 0-1
+            emb = embedding_scores.get(memory_id, 0.0)         # cosine, ~0-1
+
+            # Treat "BM25" component as lexical (BM25 + optional embedding fusion)
+            lexical = bm * bm_weight + emb * emb_weight
+
+            # Keep a *tiny* concept boost inside lexical for very short queries
+            lexical = lexical + cn * concept_weight * 0.05
+
+            if lexical > 0:
+                lexical_scores[memory_id] = lexical
+                concept_norms[memory_id] = cn
+
             if explain:
                 sources = []
                 if memory_id in bm25_scores:
@@ -540,25 +597,48 @@ class Synapse:
                 if memory_id in embedding_scores:
                     sources.append("embedding")
                 breakdowns[memory_id] = ScoreBreakdown(
-                    bm25_score=bm,
+                    bm25_score=lexical,
                     concept_score=cn,
                     embedding_score=emb,
                     match_sources=sources,
                 )
         
-        if not blended:
+        if not lexical_scores:
             return []
         
-        # Load memory objects and apply effective strength
+        # Load memory objects and compute multi-signal score components
         candidates = []
-        for memory_id in blended:
-            if memory_id in self.store.memories:
-                memory_data = self.store.memories[memory_id]
-                memory = self._memory_data_to_object(memory_data)
-                if memory.effective_strength >= min_strength:
-                    # Pure BM25+concept score — effective strength only for filtering
-                    final_score = blended[memory_id]
-                    candidates.append((memory, final_score))
+        for memory_id, lexical in lexical_scores.items():
+            if memory_id not in self.store.memories:
+                continue
+
+            memory_data = self.store.memories[memory_id]
+            memory = self._memory_data_to_object(memory_data)
+            if memory.effective_strength < min_strength:
+                continue
+
+            # Temporal component (recency): same half-life as memory decay
+            age = max(0.0, now - memory.last_accessed)
+            temporal_component = math.pow(0.5, age / DECAY_HALF_LIFE)
+
+            # Concept activation component: average activation strength of this memory's concepts
+            concept_activation_component = self.concept_graph.memory_concept_activation_score(memory_id, now=now)
+
+            cn = concept_norms.get(memory_id, 0.0)
+
+            # Provisional score (episode signal computed after anchor selection)
+            provisional = (
+                0.30 * lexical +
+                0.25 * cn +
+                0.20 * temporal_component +
+                0.15 * concept_activation_component
+            )
+
+            if explain and memory_id in breakdowns:
+                breakdowns[memory_id].temporal_score = temporal_component
+                breakdowns[memory_id].concept_activation_score = concept_activation_component
+
+            candidates.append((memory, provisional))
         
         if not candidates:
             return []
@@ -566,7 +646,23 @@ class Synapse:
         # Sort by score
         candidates.sort(key=lambda x: x[1], reverse=True)
         top_candidates = candidates[:limit * 2]  # Get more for expansion
-        
+
+        # Episode component (0/1): boost memories in the same episode as the top result
+        anchor_episode_id: Optional[int] = None
+        if top_candidates:
+            anchor_episode_id = self.episode_index.get_memory_episode(top_candidates[0][0].id)
+
+        if anchor_episode_id is not None:
+            adjusted = []
+            for memory, score in top_candidates:
+                ep = self.episode_index.get_memory_episode(memory.id)
+                episode_component = 1.0 if ep == anchor_episode_id else 0.0
+                score = score + 0.10 * episode_component
+                if explain and memory.id in breakdowns:
+                    breakdowns[memory.id].episode_score = episode_component
+                adjusted.append((memory, score))
+            top_candidates = adjusted
+
         # ════════════════════════════════════════════════════════════
         #  POST-SCORING: Edge spreading + Episode expansion + Temporal boost
         # ════════════════════════════════════════════════════════════
@@ -601,7 +697,7 @@ class Synapse:
                     not self.store.memories[sibling_id].get('consolidated', False)):
                     memory_scores[sibling_id] *= 1.05  # tiny boost, not additive
                     if explain and sibling_id in breakdowns:
-                        breakdowns[sibling_id].episode_score = 0.05
+                        breakdowns[sibling_id].episode_score = max(breakdowns[sibling_id].episode_score, 0.05)
         
         # Temporal proximity: very mild boost only for existing candidates
         if temporal_boost and top_memory_ids:
@@ -616,7 +712,7 @@ class Synapse:
                     if not memory_type or self.store.memories[memory_id].get('memory_type') == memory_type:
                         memory_scores[memory_id] *= 1.05
                         if explain and memory_id in breakdowns:
-                            breakdowns[memory_id].temporal_score = 0.05
+                            breakdowns[memory_id].temporal_score = max(breakdowns[memory_id].temporal_score, 0.05)
         
         # Handle supersession (demote memories that are superseded)
         all_candidate_ids = set(memory_scores.keys())
@@ -642,7 +738,14 @@ class Synapse:
             # Apply supersession penalty
             if memory_id in superseded_ids:
                 score *= 0.1  # Heavily demote superseded memories
-                
+
+            # Memory level boost: pattern (consolidated) and profile rank higher
+            level = memory_data.get('memory_level', 'instance')
+            if level == 'pattern':
+                score *= 1.3
+            elif level == 'profile':
+                score *= 1.5
+
             final_results.append((memory, score))
         
         # Sort and limit
@@ -655,9 +758,12 @@ class Synapse:
                 if memory.id in breakdowns:
                     memory.score_breakdown = breakdowns[memory.id]
         
-        # Reinforce accessed memories
+        # Activate concepts referenced by returned memories (concept-level reinforcement)
+        self.concept_graph.activate_memories([m.id for m in result_memories], now=now)
+
+        # Reinforce accessed memories (per-memory reinforcement)
         self._reinforce_memories([m.id for m in result_memories])
-        
+
         return result_memories
     
     def _memory_data_to_object(self, memory_data: Dict) -> Memory:
@@ -666,6 +772,7 @@ class Synapse:
             id=memory_data['id'],
             content=memory_data['content'],
             memory_type=memory_data['memory_type'],
+            memory_level=memory_data.get('memory_level', 'instance'),
             strength=memory_data['strength'],
             access_count=memory_data['access_count'],
             created_at=memory_data['created_at'],
@@ -730,11 +837,206 @@ class Synapse:
         }
         self.store.insert_edge(edge_data)
     
-    def consolidate(self, threshold: float = 0.85, max_group: int = 5):
-        """Consolidate similar memories (placeholder implementation)."""
-        # This would implement the consolidation algorithm
-        # For now, just a stub
-        pass
+    def consolidate(self, min_cluster_size: int = 3, similarity_threshold: float = 0.7,
+                    max_age_days: Optional[float] = None, dry_run: bool = False) -> List[Dict[str, Any]]:
+        """Consolidate clusters of similar memories into stronger summary memories.
+
+        Algorithm:
+        1. Group memories by concept overlap (sharing 2+ concepts).
+        2. Within groups, compute pairwise Jaccard similarity on word shingles.
+        3. Clusters >= *min_cluster_size* get merged into a single consolidated
+           memory with boosted strength.
+
+        Args:
+            min_cluster_size: Minimum cluster size to trigger consolidation.
+            similarity_threshold: Jaccard similarity threshold for clustering.
+            max_age_days: Only consider memories older than this many days.
+            dry_run: If True, return preview without modifying anything.
+
+        Returns:
+            List of consolidation results (one dict per cluster).
+        """
+        import re as _re
+        from collections import defaultdict as _defaultdict
+
+        now = time.time()
+        age_cutoff = now - (max_age_days * 86400.0) if max_age_days else None
+
+        # ── Collect eligible memories ──
+        eligible: Dict[int, Dict] = {}
+        for mid, mdata in self.store.memories.items():
+            if mdata.get('consolidated', False):
+                continue
+            # Skip memories already consolidated into something
+            meta = mdata.get('metadata', '{}')
+            if isinstance(meta, str):
+                meta = json.loads(meta)
+            if meta.get('consolidated_into'):
+                continue
+            if age_cutoff and mdata['created_at'] > age_cutoff:
+                continue
+            eligible[mid] = mdata
+
+        if not eligible:
+            return []
+
+        # ── Build concept → memory mapping ──
+        concept_to_mids: Dict[str, Set[int]] = _defaultdict(set)
+        mid_to_concepts: Dict[int, Set[str]] = _defaultdict(set)
+        for mid in eligible:
+            concepts = self.concept_graph.get_memory_concepts(mid)
+            for c in concepts:
+                concept_to_mids[c].add(mid)
+                mid_to_concepts[mid].add(c)
+
+        # ── Group by concept overlap (2+ shared concepts) OR all pairs for small sets ──
+        candidate_pairs: Set[frozenset] = set()
+        eligible_ids = list(eligible.keys())
+        for i, mid in enumerate(eligible_ids):
+            for j in range(i + 1, len(eligible_ids)):
+                other_mid = eligible_ids[j]
+                # Concept overlap check
+                shared = mid_to_concepts.get(mid, set()) & mid_to_concepts.get(other_mid, set())
+                if len(shared) >= 2:
+                    candidate_pairs.add(frozenset([mid, other_mid]))
+                    continue
+                # Fallback: if either has few/no concepts, still consider as candidate
+                # (will be filtered by Jaccard similarity below)
+                if len(mid_to_concepts.get(mid, set())) < 2 or len(mid_to_concepts.get(other_mid, set())) < 2:
+                    candidate_pairs.add(frozenset([mid, other_mid]))
+
+        # ── Jaccard similarity on word shingles ──
+        def _tokenize_words(text: str) -> Set[str]:
+            return set(_re.findall(r'[a-zA-Z0-9]+', text.lower()))
+
+        token_cache: Dict[int, Set[str]] = {}
+        def _get_tokens(mid: int) -> Set[str]:
+            if mid not in token_cache:
+                token_cache[mid] = _tokenize_words(eligible[mid]['content'])
+            return token_cache[mid]
+
+        def _jaccard_sim(a: Set[str], b: Set[str]) -> float:
+            if not a and not b:
+                return 1.0
+            if not a or not b:
+                return 0.0
+            return len(a & b) / len(a | b)
+
+        # Build adjacency for similar pairs
+        adjacency: Dict[int, Set[int]] = _defaultdict(set)
+        for pair in candidate_pairs:
+            a, b = pair
+            sim = _jaccard_sim(_get_tokens(a), _get_tokens(b))
+            if sim >= similarity_threshold:
+                adjacency[a].add(b)
+                adjacency[b].add(a)
+
+        # ── Greedy clustering (connected components) ──
+        visited: Set[int] = set()
+        clusters: List[List[int]] = []
+        for mid in adjacency:
+            if mid in visited:
+                continue
+            # BFS
+            cluster = []
+            queue = [mid]
+            while queue:
+                node = queue.pop()
+                if node in visited:
+                    continue
+                visited.add(node)
+                cluster.append(node)
+                for neighbor in adjacency.get(node, set()):
+                    if neighbor not in visited:
+                        queue.append(neighbor)
+            if len(cluster) >= min_cluster_size:
+                clusters.append(sorted(cluster))
+
+        if not clusters:
+            return []
+
+        # ── Consolidate each cluster ──
+        results = []
+        for cluster_ids in clusters:
+            # Gather data
+            contents = []
+            all_concepts: Set[str] = set()
+            max_strength = 0.0
+            for mid in cluster_ids:
+                mdata = eligible[mid]
+                contents.append(mdata['content'])
+                all_concepts.update(mid_to_concepts.get(mid, set()))
+                max_strength = max(max_strength, mdata['strength'])
+
+            # Merge unique sentences/facts
+            seen_sentences: Set[str] = set()
+            unique_parts: List[str] = []
+            for content in contents:
+                # Split on sentence boundaries
+                sentences = _re.split(r'(?<=[.!?])\s+', content.strip())
+                for sent in sentences:
+                    normalized = sent.strip().lower()
+                    if normalized and normalized not in seen_sentences:
+                        seen_sentences.add(normalized)
+                        unique_parts.append(sent.strip())
+
+            summary = ". ".join(unique_parts)
+            if summary and not summary.endswith('.'):
+                summary += '.'
+            boosted_strength = min(max_strength * 1.2, 2.0)
+
+            result_entry = {
+                'source_ids': cluster_ids,
+                'source_count': len(cluster_ids),
+                'summary': summary,
+                'concepts': sorted(all_concepts),
+                'strength': boosted_strength,
+            }
+
+            if dry_run:
+                results.append(result_entry)
+                continue
+
+            # Create consolidated memory
+            consolidated_metadata = {
+                'source_ids': cluster_ids,
+                'source_count': len(cluster_ids),
+                'consolidated_at': now,
+            }
+            memory_data = {
+                'content': summary,
+                'memory_type': 'consolidated',
+                'memory_level': 'pattern',
+                'strength': boosted_strength,
+                'access_count': 0,
+                'created_at': now,
+                'last_accessed': now,
+                'metadata': json.dumps(consolidated_metadata),
+                'consolidated': False,
+                'summary_of': json.dumps(cluster_ids),
+            }
+            new_id = self.store.insert_memory(memory_data)
+
+            # Index the consolidated memory
+            self.inverted_index.add_document(new_id, summary)
+            self.temporal_index.add_memory(new_id, now)
+            for concept_name in all_concepts:
+                category = self.concept_graph.concepts[concept_name].category if concept_name in self.concept_graph.concepts else 'general'
+                self.concept_graph.link_memory_concept(new_id, concept_name, category)
+
+            # Mark originals
+            for mid in cluster_ids:
+                mdata = self.store.memories[mid]
+                meta = mdata.get('metadata', '{}')
+                if isinstance(meta, str):
+                    meta = json.loads(meta)
+                meta['consolidated_into'] = new_id
+                self.store.update_memory(mid, {'metadata': json.dumps(meta)})
+
+            result_entry['consolidated_id'] = new_id
+            results.append(result_entry)
+
+        return results
     
     def _find_or_create_episode(self, episode_name: str, timestamp: float) -> int:
         """Find existing episode or create a new one."""
@@ -759,6 +1061,153 @@ class Synapse:
         
         return episode_id
     
+    # ════════════════════════════════════════════════════════════
+    #  Temporal Fact Chains
+    # ════════════════════════════════════════════════════════════
+
+    def history(self, memory_id: int) -> List[Dict[str, Any]]:
+        """Return the full temporal chain for a memory, oldest first.
+
+        Each entry is ``{"memory": Memory, "version": int, "current": bool}``.
+        """
+        # Walk backwards to find the chain root
+        root_id = memory_id
+        visited = {root_id}
+        while True:
+            mdata = self.store.memories.get(root_id)
+            if mdata is None:
+                break
+            meta = json.loads(mdata.get('metadata', '{}'))
+            prev_id = meta.get('supersedes')  # this memory supersedes prev_id
+            if prev_id is None:
+                # Check if something supersedes root_id (root_id is the OLD one)
+                # Actually, "supersedes" in metadata means this memory replaced prev_id.
+                # So walk via supersedes to find the oldest.
+                break
+            if prev_id in visited:
+                break
+            visited.add(prev_id)
+            root_id = prev_id
+
+        # Also check: maybe memory_id is itself superseded (i.e., it's old).
+        # Walk backwards via incoming supersedes edges.
+        # Re-walk: start from memory_id, follow "supersedes" metadata backwards
+        # AND follow "superseded_by" metadata forwards to find chain ends.
+        # Simpler: walk backwards from memory_id using the supersedes edge graph.
+        
+        # Walk backwards via reverse supersedes edges (incoming supersedes = I am superseded by someone)
+        root_id = memory_id
+        visited = {root_id}
+        while True:
+            mdata = self.store.memories.get(root_id)
+            if mdata is None:
+                break
+            meta = json.loads(mdata.get('metadata', '{}'))
+            supersedes_id = meta.get('supersedes')
+            if supersedes_id is not None and supersedes_id not in visited:
+                visited.add(supersedes_id)
+                root_id = supersedes_id
+            else:
+                break
+
+        # Now walk forward from root via superseded_by
+        chain: List[Dict[str, Any]] = []
+        current_id = root_id
+        version = 1
+        seen = set()
+        while current_id is not None and current_id not in seen:
+            seen.add(current_id)
+            mdata = self.store.memories.get(current_id)
+            if mdata is None:
+                break
+            meta = json.loads(mdata.get('metadata', '{}'))
+            memory = self._memory_data_to_object(mdata)
+            chain.append({
+                "memory": memory,
+                "version": version,
+                "current": meta.get('superseded_by') is None,
+            })
+            version += 1
+            current_id = meta.get('superseded_by')
+
+        return chain
+
+    def fact_history(self, query: str, limit: int = 1) -> List[Dict[str, Any]]:
+        """Find the best matching memory and return its full temporal chain.
+
+        Args:
+            query: Search query to find the relevant fact.
+            limit: How many top matches to build chains for (default 1).
+
+        Returns:
+            Ordered list of chain entries (oldest → newest).
+        """
+        matches = self.recall(query, limit=limit)
+        if not matches:
+            return []
+        return self.history(matches[0].id)
+
+    def timeline(self, concept: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Return a timeline of fact changes, optionally filtered by concept.
+
+        Each entry: ``{"memory": Memory, "supersedes": int|None, "timestamp": float}``.
+        """
+        results: List[Dict[str, Any]] = []
+
+        for mid, mdata in self.store.memories.items():
+            meta = json.loads(mdata.get('metadata', '{}'))
+            if meta.get('supersedes') is None and meta.get('superseded_by') is None:
+                continue  # not part of any chain
+
+            if concept is not None:
+                mem_concepts = self.concept_graph.get_memory_concepts(mid)
+                if concept.lower() not in {c.lower() for c in mem_concepts}:
+                    continue
+
+            memory = self._memory_data_to_object(mdata)
+            results.append({
+                "memory": memory,
+                "supersedes": meta.get('supersedes'),
+                "superseded_by": meta.get('superseded_by'),
+                "fact_chain_id": meta.get('fact_chain_id'),
+                "timestamp": mdata['created_at'],
+            })
+
+        results.sort(key=lambda x: x['timestamp'])
+        return results
+
+    @staticmethod
+    def _parse_temporal_arg(temporal: str) -> Optional[float]:
+        """Parse a temporal argument like '2024-03' or '2024-06-15' into a timestamp."""
+        import datetime
+        for fmt in ("%Y-%m-%d", "%Y-%m"):
+            try:
+                dt = datetime.datetime.strptime(temporal, fmt)
+                # For month-only, use end of month
+                if fmt == "%Y-%m":
+                    if dt.month == 12:
+                        dt = dt.replace(year=dt.year + 1, month=1)
+                    else:
+                        dt = dt.replace(month=dt.month + 1)
+                return dt.timestamp()
+            except ValueError:
+                continue
+        # Try as float timestamp
+        try:
+            return float(temporal)
+        except (ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _resolve_chain_at(chain: List[Dict[str, Any]], at_ts: float) -> Optional['Memory']:
+        """Given a chain and a point-in-time, return the version that was current then."""
+        # Find the latest version created at or before at_ts
+        best = None
+        for entry in chain:
+            if entry["memory"].created_at <= at_ts:
+                best = entry["memory"]
+        return best
+
     def flush(self):
         """Force write to disk."""
         self.store.flush()
@@ -1005,3 +1454,72 @@ class Synapse:
         # Sort by memory count (most used concepts first)
         result.sort(key=lambda x: x["memory_count"], reverse=True)
         return result
+
+    def hot_concepts(self, k: int = 10) -> List[tuple[str, float]]:
+        """Return the top-k most active concepts.
+
+        Returns:
+            List of (concept_name, activation_strength) tuples.
+        """
+        now = time.time()
+        scored: List[tuple[str, float]] = []
+        for name in self.concept_graph.concepts.keys():
+            strength = self.concept_graph.concept_activation_strength(name, now=now)
+            if strength > 0:
+                scored.append((name, strength))
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return scored[:k]
+
+    def prune(self, *, min_strength: float = 0.1, min_access: int = 0,
+              max_age_days: float = 90, dry_run: bool = True) -> List[int]:
+        """Prune (forget) weak, old, rarely accessed memories whose concepts are cold.
+
+        Criteria (all must be true):
+          - effective_strength < min_strength
+          - access_count <= min_access
+          - age_days >= max_age_days
+          - max concept activation strength for memory's concepts < 0.1
+
+        Returns:
+            List of pruned memory IDs (or would-be pruned IDs if dry_run).
+        """
+        now = time.time()
+        max_age_secs = float(max_age_days) * 86400.0
+        concept_activation_threshold = 0.1
+
+        to_prune: List[int] = []
+        for mid in list(self.store.memories.keys()):
+            mdata = self.store.memories.get(mid)
+            if not mdata or mdata.get('consolidated', False):
+                continue
+
+            memory = self._memory_data_to_object(mdata)
+            if now - memory.created_at < max_age_secs:
+                continue
+            if memory.access_count > min_access:
+                continue
+            if memory.effective_strength >= min_strength:
+                continue
+
+            concepts = self.concept_graph.get_memory_concepts(mid)
+            if concepts:
+                concept_strength = max(
+                    self.concept_graph.concept_activation_strength(c, now=now)
+                    for c in concepts
+                )
+            else:
+                concept_strength = 0.0
+
+            if concept_strength >= concept_activation_threshold:
+                continue
+
+            to_prune.append(mid)
+
+        if dry_run:
+            return sorted(to_prune)
+
+        pruned: List[int] = []
+        for mid in to_prune:
+            if self.forget(mid):
+                pruned.append(mid)
+        return sorted(pruned)

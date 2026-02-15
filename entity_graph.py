@@ -172,6 +172,12 @@ CONCEPT_MAP = {
         "aliases": ["timezone", "time zone", "tz", "utc", "gmt", "cst", "est", "pst"],
     },
 
+    # food/diet
+    "food": {
+        "category": "preferences",
+        "aliases": ["food", "diet", "dietary", "vegetarian", "vegan", "gluten free", "keto"],
+    },
+
     # decisions
     "decision": {
         "category": "engineering",

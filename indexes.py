@@ -32,11 +32,20 @@ STOPWORDS = {
 
 @dataclass
 class ConceptNode:
-    """Node in the concept graph."""
+    """Node in the concept graph.
+
+    Activation tracks *concept* usage across recalls, allowing frequently
+    accessed concepts to stay "hot" even when individual memories age.
+    """
+
     name: str
     category: str
     memory_ids: Set[int] = field(default_factory=set)
     created_at: float = 0.0
+
+    # Concept activation tracking (in-memory)
+    activation_count: int = 0
+    last_activated: float = 0.0
 
 
 @dataclass 
@@ -205,11 +214,18 @@ class InvertedIndex:
 
 
 class ConceptGraph:
+    """Concept graph for semantic matching.
+
+    Structure:
+      - concept_name -> ConceptNode
+      - memory_id -> set[concept_name]
+
+    Also maintains per-concept activation statistics used to boost recall.
     """
-    Concept graph for semantic matching.
-    Structure: concept_name -> ConceptNode
-    """
-    
+
+    # Concept activation decays slower than memories
+    CONCEPT_ACTIVATION_HALF_LIFE_SECS: float = 86400.0 * 30  # ~30 days
+
     def __init__(self):
         self.concepts: Dict[str, ConceptNode] = {}
         self.memory_concepts: Dict[int, Set[str]] = defaultdict(set)  # memory_id -> concept_names
@@ -217,10 +233,12 @@ class ConceptGraph:
     def add_concept(self, name: str, category: str = "general") -> ConceptNode:
         """Add or get a concept."""
         if name not in self.concepts:
+            now = time.time()
             self.concepts[name] = ConceptNode(
                 name=name,
                 category=category,
-                created_at=time.time()
+                created_at=now,
+                last_activated=now,
             )
         return self.concepts[name]
     
@@ -299,6 +317,58 @@ class ConceptGraph:
         # Return top candidates
         sorted_candidates = sorted(scores.items(), key=lambda x: x[1], reverse=True)
         return dict(sorted_candidates[:limit])
+
+    # ── Concept activation tracking ─────────────────────────────────────
+
+    def activate_concepts(self, concept_names: Set[str] | List[str], *, now: Optional[float] = None, count: int = 1) -> None:
+        """Increment activation stats for concepts."""
+        ts = time.time() if now is None else now
+        for name in concept_names:
+            node = self.concepts.get(name)
+            if node is None:
+                continue
+            node.activation_count += max(0, int(count))
+            node.last_activated = ts
+
+    def activate_memories(self, memory_ids: List[int], *, now: Optional[float] = None) -> None:
+        """Activate all concepts referenced by the given memories."""
+        ts = time.time() if now is None else now
+        concepts: Set[str] = set()
+        for mid in memory_ids:
+            concepts |= self.memory_concepts.get(mid, set())
+        self.activate_concepts(concepts, now=ts, count=1)
+
+    def concept_activation_strength(self, concept_name: str, *, now: Optional[float] = None) -> float:
+        """Return activation strength in [0,1] for a concept.
+
+        Strength increases with activation_count and decays with time since
+        last_activated using a ~30 day half-life.
+        """
+        node = self.concepts.get(concept_name)
+        if node is None:
+            return 0.0
+        if node.activation_count <= 0:
+            return 0.0
+
+        ts = time.time() if now is None else now
+        age = max(0.0, ts - (node.last_activated or node.created_at))
+        recency = math.pow(0.5, age / self.CONCEPT_ACTIVATION_HALF_LIFE_SECS)
+
+        # Saturating frequency curve: ~0.63 at 5, ~0.86 at 10, ~0.95 at 20
+        freq = 1.0 - math.exp(-float(node.activation_count) / 5.0)
+        strength = freq * recency
+        return max(0.0, min(1.0, strength))
+
+    def memory_concept_activation_score(self, memory_id: int, *, now: Optional[float] = None) -> float:
+        """Return average activation strength of concepts linked to memory."""
+        concepts = self.memory_concepts.get(memory_id, set())
+        if not concepts:
+            return 0.0
+        ts = time.time() if now is None else now
+        vals = [self.concept_activation_strength(c, now=ts) for c in concepts]
+        if not vals:
+            return 0.0
+        return sum(vals) / len(vals)
 
 
 class EdgeGraph:

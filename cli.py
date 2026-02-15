@@ -76,6 +76,8 @@ def cmd_recall(args, client: SynapseClient):
         kwargs = dict(context=args.query, limit=args.limit)
         if getattr(args, 'explain', False):
             kwargs['explain'] = True
+        if getattr(args, 'at', None):
+            kwargs['temporal'] = args.at
         memories = client.recall(**kwargs)
         if not memories:
             print("🔍 No memories found")
@@ -92,6 +94,7 @@ def cmd_recall(args, client: SynapseClient):
                 print(f"     Concept: {bd.get('concept_score', 0):.3f}")
                 print(f"     Temporal: {bd.get('temporal_score', 0):.3f}")
                 print(f"     Episode: {bd.get('episode_score', 0):.3f}")
+                print(f"     Concept Activation: {bd.get('concept_activation_score', 0):.3f}")
                 print(f"     Embedding: {bd.get('embedding_score', 0):.3f}")
                 print(f"     Sources: {bd.get('match_sources', [])}")
     except SynapseRequestError as e:
@@ -178,6 +181,40 @@ def cmd_concepts(args, client: SynapseClient):
         sys.exit(1)
 
 
+def cmd_hot_concepts(args, client: SynapseClient):
+    try:
+        hot = client.hot_concepts(k=args.k)
+        if not hot:
+            print("🔥 No active concepts yet")
+            return
+        print(f"🔥 Top {len(hot)} hot concepts:\n")
+        for name, strength in hot:
+            print(f"  - {name}: {strength:.3f}")
+    except SynapseRequestError as e:
+        print(f"❌ Request error: {e}")
+        sys.exit(1)
+
+
+def cmd_prune(args, client: SynapseClient):
+    try:
+        pruned = client.prune(
+            min_strength=args.min_strength,
+            min_access=args.min_access,
+            max_age_days=args.max_age,
+            dry_run=args.dry_run,
+        )
+        if not pruned:
+            print("🧹 Nothing to prune")
+            return
+        if args.dry_run:
+            print(f"🧹 Would prune {len(pruned)} memories: {pruned}")
+        else:
+            print(f"🧹 Pruned {len(pruned)} memories: {pruned}")
+    except SynapseRequestError as e:
+        print(f"❌ Request error: {e}")
+        sys.exit(1)
+
+
 def cmd_stats(args, client: SynapseClient):
     try:
         stats = client.stats()
@@ -213,6 +250,70 @@ def cmd_shutdown(args, client: SynapseClient):
 
 
 # ─── Portable Format commands (standalone, no daemon needed) ─────────────────
+
+def cmd_history(args):
+    from synapse import Synapse
+    db_path = args.db or ":memory:"
+    s = Synapse(db_path)
+    chain = s.fact_history(args.query)
+    if not chain:
+        print("🔍 No fact chain found")
+    else:
+        print(f"📜 Fact history ({len(chain)} versions):\n")
+        for entry in chain:
+            m = entry['memory']
+            marker = " ← current" if entry['current'] else ""
+            import datetime
+            created = datetime.datetime.fromtimestamp(m.created_at)
+            print(f"  v{entry['version']} [{created.strftime('%Y-%m-%d %H:%M')}] #{m.id}: {m.content}{marker}")
+    s.close()
+
+
+def cmd_timeline(args):
+    from synapse import Synapse
+    db_path = args.db or ":memory:"
+    s = Synapse(db_path)
+    changes = s.timeline(concept=args.concept)
+    if not changes:
+        print("🔍 No temporal changes found")
+    else:
+        print(f"📅 Timeline ({len(changes)} entries):\n")
+        for entry in changes:
+            m = entry['memory']
+            import datetime
+            ts = datetime.datetime.fromtimestamp(entry['timestamp'])
+            chain_id = entry.get('fact_chain_id', '?')
+            action = "supersedes" if entry.get('supersedes') else "initial"
+            print(f"  [{ts.strftime('%Y-%m-%d %H:%M')}] #{m.id} ({action}, chain={chain_id}): {m.content}")
+    s.close()
+
+
+def cmd_consolidate(args):
+    from synapse import Synapse
+    db_path = args.db or ":memory:"
+    s = Synapse(db_path)
+    results = s.consolidate(
+        min_cluster_size=args.min_cluster,
+        similarity_threshold=args.threshold,
+        max_age_days=args.max_age_days,
+        dry_run=args.dry_run,
+    )
+    if not results:
+        print("🔍 No clusters found to consolidate")
+    else:
+        mode = "DRY RUN — " if args.dry_run else ""
+        print(f"🧠 {mode}{len(results)} cluster(s) consolidated:\n")
+        for i, r in enumerate(results):
+            print(f"  Cluster {i+1}: {r['source_count']} memories → strength {r['strength']:.2f}")
+            print(f"    Concepts: {', '.join(r['concepts'][:10])}")
+            print(f"    Summary: {r['summary'][:200]}")
+            if 'consolidated_id' in r:
+                print(f"    New memory ID: #{r['consolidated_id']}")
+            print()
+    if not args.dry_run:
+        s.flush()
+    s.close()
+
 
 def cmd_export(args):
     from portable import export_synapse
@@ -435,6 +536,7 @@ def main():
     p.add_argument('--limit', type=int, default=10)
     p.add_argument('--metadata', action='store_true')
     p.add_argument('--explain', action='store_true', help='Show score breakdown')
+    p.add_argument('--at', default=None, help='Temporal query: date (2024-03), "all", or "latest"')
 
     p = subparsers.add_parser('list', help='List all memories')
     p.add_argument('--limit', type=int, default=50)
@@ -460,11 +562,39 @@ def main():
     p = subparsers.add_parser('concepts', help='List all concepts')
     p.add_argument('--limit', type=int, default=50)
 
+    p = subparsers.add_parser('hot-concepts', help='Show most active concepts')
+    p.add_argument('-k', type=int, default=10, help='Number of concepts')
+
+    p = subparsers.add_parser('prune', help='Auto-prune weak, old memories (forgetting as a feature)')
+    p.add_argument('--min-strength', type=float, default=0.1)
+    p.add_argument('--min-access', type=int, default=0)
+    p.add_argument('--max-age', type=float, default=90, help='Only prune memories older than N days')
+    p.add_argument('--dry-run', action='store_true', help='Preview prune results')
+    p.add_argument('--no-dry-run', dest='dry_run', action='store_false')
+    p.set_defaults(dry_run=True)
+
     subparsers.add_parser('stats', help='Show server statistics')
     subparsers.add_parser('ping', help='Ping the server')
 
     p = subparsers.add_parser('shutdown', help='Shutdown the server')
     p.add_argument('--force', action='store_true')
+
+    # ── Temporal fact chain commands (standalone) ──
+    p = subparsers.add_parser('history', help='Show fact evolution history')
+    p.add_argument('query', help='Query to find the fact')
+    p.add_argument('--db', help='Synapse database path')
+
+    p = subparsers.add_parser('timeline', help='Show timeline of fact changes')
+    p.add_argument('--concept', default=None, help='Filter by concept')
+    p.add_argument('--db', help='Synapse database path')
+
+    # ── Consolidate command (standalone) ──
+    p = subparsers.add_parser('consolidate', help='Consolidate similar memories')
+    p.add_argument('--db', help='Synapse database path')
+    p.add_argument('--dry-run', action='store_true', help='Preview without modifying')
+    p.add_argument('--min-cluster', type=int, default=3, help='Min cluster size')
+    p.add_argument('--threshold', type=float, default=0.7, help='Similarity threshold')
+    p.add_argument('--max-age-days', type=float, default=None, help='Only consolidate memories older than N days')
 
     # ── Portable Format commands ──
     p = subparsers.add_parser('export', help='Export database to .synapse file')
@@ -528,6 +658,9 @@ def main():
 
     # Standalone commands (no daemon needed)
     standalone = {
+        'history': cmd_history,
+        'timeline': cmd_timeline,
+        'consolidate': cmd_consolidate,
         'export': cmd_export,
         'import': cmd_import,
         'inspect': cmd_inspect,
@@ -559,6 +692,8 @@ def main():
         'forget': cmd_forget,
         'link': cmd_link,
         'concepts': cmd_concepts,
+        'hot-concepts': cmd_hot_concepts,
+        'prune': cmd_prune,
         'stats': cmd_stats,
         'ping': cmd_ping,
         'shutdown': cmd_shutdown,
