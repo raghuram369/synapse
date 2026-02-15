@@ -36,6 +36,7 @@ MANIFEST
 
 # Synapse runtime data
 synapse_data/
+*.synapse
 
 # Marketing files (not code)
 TWITTER_DRAFT.md

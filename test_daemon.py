@@ -179,7 +179,7 @@ class TestSynapseIntegration(unittest.TestCase):
         self.assertIn('id', memory)
         self.assertIn('strength', memory)
 
-    @patch('extractor.extract_facts')
+    @patch('synapse.extract_facts')
     def test_remember_with_extraction(self, mock_extract):
         """Test remember with fact extraction."""
         # Mock extraction to return multiple facts

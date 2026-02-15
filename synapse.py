@@ -685,6 +685,164 @@ class Synapse:
         """Create compacted snapshot."""
         self.store.create_snapshot()
     
+    # ════════════════════════════════════════════════════════════
+    #  Portable Format (Phase 2) — export / load / merge
+    # ════════════════════════════════════════════════════════════
+
+    def export(self, path: str, *,
+               since: Optional[str] = None,
+               until: Optional[str] = None,
+               concepts: Optional[List[str]] = None,
+               tags: Optional[List[str]] = None,
+               memory_types: Optional[List[str]] = None,
+               source_agent: str = "unknown") -> str:
+        """Export this Synapse instance to a .synapse portable file.
+
+        Examples:
+            s.export("my_agent.synapse")
+            s.export("my_agent.synapse", since="2024-01-01")
+            s.export("my_agent.synapse", concepts=["food", "travel"])
+        """
+        from portable import export_synapse
+        return export_synapse(self, path, since=since, until=until,
+                              concepts=concepts, tags=tags,
+                              memory_types=memory_types,
+                              source_agent=source_agent)
+
+    def load(self, path: str, *, deduplicate: bool = True,
+             similarity_threshold: float = 0.85) -> Dict[str, int]:
+        """Import a .synapse file into this instance.
+
+        Example:
+            s = Synapse()
+            s.load("my_agent.synapse")
+        """
+        from portable import import_synapse
+        return import_synapse(self, path, deduplicate=deduplicate,
+                              similarity_threshold=similarity_threshold)
+
+    def merge(self, path: str, *,
+              conflict_resolution: str = "newer_wins",
+              similarity_threshold: float = 0.85) -> Dict[str, int]:
+        """Merge a .synapse file into this instance with deduplication.
+
+        Example:
+            s.merge("other_agent.synapse")
+        """
+        from portable import merge_synapse
+        return merge_synapse(self, path, conflict_resolution=conflict_resolution,
+                             similarity_threshold=similarity_threshold)
+
+    # ════════════════════════════════════════════════════════════
+    #  Federation (Phase 3) — serve / push / pull / sync / peers
+    # ════════════════════════════════════════════════════════════
+
+    def serve(self, port: int = 9470, host: str = "0.0.0.0",
+              node_id: Optional[str] = None, auth_token: Optional[str] = None):
+        """Start a federation HTTP server for peer-to-peer memory sync.
+
+        Example:
+            s.serve(port=9470)
+        """
+        from federation.node import SynapseNode
+        nid = node_id or f"synapse-{id(self)}"
+        self._federation_node = SynapseNode(node_id=nid, synapse=self,
+                                            auth_token=auth_token)
+        # Seed the federated store from our local memories
+        self._sync_to_federation()
+        self._federation_node.listen(port=port, host=host)
+        return self._federation_node
+
+    def push(self, peer_url: str, namespaces: Optional[set] = None) -> Dict[str, int]:
+        """Push memories to a remote peer.
+
+        Example:
+            s.push("http://peer:9470")
+        """
+        self._ensure_federation()
+        self._sync_to_federation()
+        return self._federation_node.push(peer_url, namespaces)
+
+    def pull(self, peer_url: str, namespaces: Optional[set] = None) -> Dict[str, int]:
+        """Pull memories from a remote peer.
+
+        Example:
+            s.pull("http://peer:9470")
+        """
+        self._ensure_federation()
+        result = self._federation_node.pull(peer_url, namespaces)
+        self._sync_from_federation()
+        return result
+
+    def sync(self, peer_url: str, namespaces: Optional[set] = None) -> Dict[str, int]:
+        """Bidirectional sync with a remote peer.
+
+        Example:
+            s.sync("http://peer:9470")
+        """
+        self._ensure_federation()
+        self._sync_to_federation()
+        result = self._federation_node.sync(peer_url, namespaces)
+        self._sync_from_federation()
+        return result
+
+    def add_peer(self, url: str, token: Optional[str] = None):
+        """Add a known federation peer.
+
+        Example:
+            s.add_peer("http://peer:9470", token="secret")
+        """
+        self._ensure_federation()
+        self._federation_node.add_peer(url, token)
+
+    def share(self, namespace: str = "public"):
+        """Mark a namespace as shared with federation peers.
+
+        Example:
+            s.share("public")
+        """
+        self._ensure_federation()
+        self._federation_node.share(namespace)
+
+    def _ensure_federation(self):
+        """Lazily initialize the federation node."""
+        if not hasattr(self, '_federation_node') or self._federation_node is None:
+            from federation.node import SynapseNode
+            nid = f"synapse-{id(self)}"
+            self._federation_node = SynapseNode(node_id=nid, synapse=self)
+
+    def _sync_to_federation(self):
+        """Push local memories into the federated store."""
+        from federation.memory_object import FederatedMemory
+        from federation.vector_clock import VectorClock
+        node = self._federation_node
+        for mid, mdata in self.store.memories.items():
+            content = mdata['content']
+            mtype = mdata.get('memory_type', 'fact')
+            meta = mdata.get('metadata', '{}')
+            if isinstance(meta, str):
+                meta = json.loads(meta)
+            fm = FederatedMemory(
+                content=content,
+                memory_type=mtype,
+                metadata=meta,
+                created_at=mdata.get('created_at', time.time()),
+                origin_node=node.node_id,
+                vclock=VectorClock().increment(node.node_id),
+            )
+            if fm.hash not in node.store.memories:
+                node.store.add_memory(fm)
+
+    def _sync_from_federation(self):
+        """Import new federated memories into local store."""
+        node = self._federation_node
+        local_contents = {m['content'] for m in self.store.memories.values()}
+        for fm in node.store.memories.values():
+            if fm.content not in local_contents:
+                self.remember(fm.content, memory_type=fm.memory_type,
+                              metadata=fm.metadata, deduplicate=True)
+                local_contents.add(fm.content)
+
     def concepts(self) -> List[Dict[str, Any]]:
         """Return all concepts with their memory counts."""
         result = []

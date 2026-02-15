@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "synapse-ai-memory"
-version = "0.1.0"
-description = "A neuroscience-inspired memory database for AI agents. Zero dependencies. Pure Python."
+version = "0.2.0"
+description = "A neuroscience-inspired memory database for AI agents with portable format and federation. Zero dependencies. Pure Python."
 authors = [{name = "Raghuram Parvataneni"}]
 readme = "README.md"
 license = {text = "MIT"}
@@ -40,6 +40,7 @@ dev = [
 ]
 
 [project.scripts]
+synapse = "cli:main"
 synapse-cli = "cli:main"
 synapsed = "synapsed:main"
 
@@ -60,8 +61,10 @@ py-modules = [
     "episode_graph", 
     "embeddings", 
     "extractor", 
-    "client", 
+    "client",
+    "portable",
 ]
+packages = ["federation"]
 
 [tool.black]
 line-length = 88

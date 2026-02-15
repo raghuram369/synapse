@@ -1,30 +1,137 @@
 # Synapse — A neuroscience-inspired memory database for AI agents
 
-**Zero LLM calls. Pure Python. Runs anywhere.**
+**Zero LLM calls. Pure Python. Runs anywhere. Export, share, federate.**
 
-![Stats](https://img.shields.io/badge/Recall@10-62.9%25-brightgreen) ![Improvement](https://img.shields.io/badge/vs%20BM25-+9%25-blue) ![API Calls](https://img.shields.io/badge/API%20calls-0-green) ![Speed](https://img.shields.io/badge/recall-%3C1ms-lightgrey)
+![Version](https://img.shields.io/badge/version-0.2.0-blue) ![Stats](https://img.shields.io/badge/Recall@10-62.9%25-brightgreen) ![Improvement](https://img.shields.io/badge/vs%20BM25-+9%25-blue) ![API Calls](https://img.shields.io/badge/API%20calls-0-green) ![Speed](https://img.shields.io/badge/recall-%3C1ms-lightgrey) ![Tests](https://img.shields.io/badge/tests-177%20passing-brightgreen)
 
 ## 🧠 Why Synapse?
 
-Synapse delivers **competitive recall quality at zero cost, zero dependencies**. Pure Python, runs on anything from a Raspberry Pi to a server. It IS the database, like Redis or Postgres.
+Synapse delivers **competitive recall quality at zero cost, zero dependencies**. Pure Python, runs on anything from a Raspberry Pi to a server. It IS the database — like Redis or Postgres, but for AI memory.
 
-**Key benefits:**
-- **Zero cost**: No API fees or platform charges
-- **Zero dependencies**: Pure Python, no external services required
-- **Fast**: Sub-millisecond recall with in-memory indexes
-- **Self-hosted**: Complete control over your data
-- **Offline capable**: Works without internet connection
+**Three pillars, one package:**
+
+| Pillar | What it does |
+|--------|-------------|
+| **Memory Engine** | BM25 + concept graphs + embeddings, sub-millisecond recall |
+| **Portable Format** | Binary `.synapse` files for export, import, merge, diff |
+| **Federation** | HTTP peer-to-peer sync with Merkle trees and vector clocks |
 
 ## 🚀 Quick Start
 
 ```python
 from synapse import Synapse
+
 s = Synapse()
+
+# Remember
 s.remember("I prefer vegetarian food")
-results = s.recall("What are my dietary preferences?")
+s.remember("Meeting with Sarah at 3pm", memory_type="event")
+
+# Recall
+results = s.recall("dietary preferences")
+
+# Export & Import
+s.export("my_memories.synapse")
+
+s2 = Synapse()
+s2.load("my_memories.synapse")
+
+# Merge from another agent
+s2.merge("other_agent.synapse")
 ```
 
 That's it! No API keys, no setup, no dependencies.
+
+## 📦 Installation
+
+```bash
+pip install synapse-ai-memory
+```
+
+Or clone and use directly:
+
+```bash
+git clone https://github.com/raghuram369/synapse.git
+cd synapse
+python3 -c "from synapse import Synapse; s = Synapse(); print('Ready!')"
+```
+
+## 📁 Portable Format
+
+Every Synapse instance can export and import `.synapse` files — a binary format with CRC integrity, provenance tracking, and streaming reads.
+
+### Python API
+
+```python
+s = Synapse("my_data")
+
+# Full export
+s.export("backup.synapse")
+
+# Filtered export
+s.export("recent.synapse", since="2024-06-01")
+s.export("food.synapse", concepts=["food", "cooking"])
+
+# Import into a fresh instance
+s2 = Synapse()
+s2.load("backup.synapse")  # with automatic deduplication
+
+# Merge without overwriting
+s2.merge("other.synapse")                          # newer wins
+s2.merge("other.synapse", conflict_resolution="keep_both")
+```
+
+### CLI
+
+```bash
+synapse export backup.synapse --db ./synapse_data
+synapse import backup.synapse --db ./synapse_data
+synapse inspect backup.synapse
+synapse merge a.synapse b.synapse -o combined.synapse
+synapse diff a.synapse b.synapse
+```
+
+## 🌐 Federation
+
+Synapse nodes can sync memories peer-to-peer over HTTP. Uses Merkle trees for efficient delta detection and vector clocks for conflict resolution.
+
+### Python API
+
+```python
+s = Synapse("my_data")
+
+# Start a federation server
+s.serve(port=9470)
+
+# Sync with peers
+s.push("http://peer:9470")
+s.pull("http://peer:9470")
+s.sync("http://peer:9470")  # bidirectional
+
+# Manage peers
+s.add_peer("http://peer:9470", token="secret")
+s.share("public")  # selective namespace sharing
+```
+
+### CLI
+
+```bash
+synapse serve --fed-port 9470 --share public
+synapse push http://peer:9470
+synapse pull http://peer:9470
+synapse sync http://peer:9470
+synapse peers http://peer:9470
+```
+
+### Federation Features
+
+- **Content-addressed storage** — memories identified by SHA-256 hash (like git)
+- **Merkle tree sync** — only transfer what's different (256-bucket fanout)
+- **Vector clocks** — track causality across distributed nodes
+- **Namespace filtering** — share only what you want (`public`, `research`, etc.)
+- **Bearer token auth** — secure peer-to-peer communication
+- **LAN discovery** — automatic peer discovery via UDP broadcast
+- **Binary wire format** — uses the `.synapse` portable format for efficient transfer
 
 ## 🏗️ Architecture
 
@@ -36,16 +143,6 @@ Query → BM25 (Primary) → Concept Graph → Local Embeddings → Fused Result
     Keyword match    Conceptual links   Semantic similarity
 ```
 
-### The Science Behind It
-
-Just like your brain, Synapse implements:
-
-- **Temporal decay**: Recent memories are weighted higher
-- **Synaptic plasticity**: Frequently accessed connections get stronger
-- **Episode grouping**: Related memories cluster together automatically  
-- **Activation spreading**: Concepts activate related concepts
-- **Supersession**: New information can replace outdated facts
-
 ### Five Native Indexes
 
 1. **InvertedIndex**: BM25 keyword search (primary)
@@ -54,11 +151,17 @@ Just like your brain, Synapse implements:
 4. **TemporalIndex**: Time-based decay and recency boosting
 5. **EpisodeIndex**: Auto-grouping of related memories
 
+### The Science Behind It
+
+- **Temporal decay**: Recent memories weighted higher
+- **Synaptic plasticity**: Frequently accessed connections get stronger
+- **Episode grouping**: Related memories cluster together automatically
+- **Activation spreading**: Concepts activate related concepts
+- **Supersession**: New information replaces outdated facts
+
 ## 📊 Benchmark Results
 
 **LOCOMO Benchmark** (industry standard):
-
-BM25 is the industry-standard baseline used by LOCOMO. Synapse beats it by 9% through neuroscience-inspired indexing.
 
 | Metric | Synapse V2 | BM25 Baseline | Improvement |
 |--------|------------|---------------|-------------|
@@ -67,19 +170,7 @@ BM25 is the industry-standard baseline used by LOCOMO. Synapse beats it by 9% th
 | **Recall@10** | **62.9%** | 57.7% | **+9.0%** |
 | **MRR** | **40.6%** | 36.7% | **+10.5%** |
 
-**Performance by Category** (Recall@10 vs BM25):
-
-| Category | Synapse V2 | BM25 Baseline | Improvement |
-|----------|------------|---------------|-------------|
-| **Single-hop factual** | **54.3%** | 40.1% | **+35.4%** |
-| **Temporal reasoning** | **67.9%** | 62.3% | **+9.0%** |
-| **Multi-hop reasoning** | **37.5%** | 30.2% | **+24.1%** |
-| **Open-domain** | **64.8%** | 62.1% | **+4.4%** |
-| **Adversarial** | **66.8%** | 63.2% | **+5.7%** |
-
 ## 📈 Comparison
-
-Focus on architecture and cost, not benchmark scores:
 
 | Feature | Synapse | Mem0 | Zep |
 |---------|---------|------|-----|
@@ -88,11 +179,13 @@ Focus on architecture and cost, not benchmark scores:
 | **Cost** | $0 | API costs | Platform fee |
 | **Self-hosted** | Yes | Partial | No |
 | **Runs offline** | Yes | No | No |
+| **Portable export** | ✅ `.synapse` files | ❌ | ❌ |
+| **Federation** | ✅ P2P sync | ❌ | ❌ |
 
 ## ✨ Features
 
 - **🔍 Hybrid Search**: BM25 + concept graphs + optional embeddings
-- **⏰ Temporal Decay**: Recent memories weighted higher automatically  
+- **⏰ Temporal Decay**: Recent memories weighted higher automatically
 - **🧠 Concept Linking**: Auto-extracted concepts with weighted relationships
 - **📚 Episode Grouping**: Related memories cluster together
 - **🔄 Activation Spreading**: Query expansion through concept networks
@@ -100,187 +193,48 @@ Focus on architecture and cost, not benchmark scores:
 - **💾 Persistent**: Redis-style AOF/RDB with automatic recovery
 - **⚡ Fast**: Sub-millisecond recall, pure in-memory indexes
 - **🔌 Optional Embeddings**: Ollama integration for semantic similarity
+- **📁 Portable Format**: Binary `.synapse` files with CRC, provenance, streaming
+- **🌐 Federation**: P2P sync via Merkle trees, vector clocks, namespace filtering
+- **🔐 Auth**: Bearer token authentication for federation peers
 - **🐍 Zero Dependencies**: Pure Python, runs anywhere
-- **🧪 Tested**: 45+ unit tests covering all major functionality
+- **🧪 Tested**: 125 unit tests covering all major functionality
 
 ## 🔗 Framework Integrations
-
-Drop-in Synapse backends for popular AI frameworks:
 
 ### LangChain
 
 ```python
 from integrations.langchain import SynapseMemory, SynapseVectorStore
-from langchain.chains import ConversationChain
-
-# Use Synapse as LangChain memory
 memory = SynapseMemory(data_dir="./memory", k=5)
-chain = ConversationChain(memory=memory, llm=your_llm)
-
-# Use Synapse as vector store
-vectorstore = SynapseVectorStore.from_texts(["doc1", "doc2"])
 ```
 
 ### LangGraph
 
-```python  
+```python
 from integrations.langgraph import SynapseMemoryStore, SynapseCheckpointer
-from langgraph.graph import StateGraph
-
-# Persistent agent memory
 memory = SynapseMemoryStore(data_dir="./agent_memory")
-checkpointer = SynapseCheckpointer(data_dir="./checkpoints")
-
-graph = StateGraph(AgentState)
-graph.add_node("recall", memory.as_recall_node()) 
-graph.add_node("respond", respond_fn)
-graph.add_node("remember", memory.as_remember_node())
-```
-
-Install optional dependencies:
-```bash
-pip install synapse-ai-memory[langchain]  # or [langgraph] or [all]
-```
-
-## 🛠️ Advanced Usage
-
-### Basic Operations
-
-```python
-from synapse import Synapse
-
-db = Synapse()
-
-# Remember facts
-db.remember("The capital of France is Paris", tags=["geography"])
-db.remember("Paris has 2.2 million people", tags=["demographics"])
-
-# Recall with context
-results = db.recall("French capital city", limit=5)
-for memory in results:
-    print(f"{memory.content} (score: {memory.score:.3f})")
-
-# Link related concepts
-db.link("Paris", "Eiffel Tower", weight=0.8)
-```
-
-### 🧪 Concept Extraction (Experimental)
-
-**Note**: Requires Ollama for LLM-powered extraction
-
-```python
-# Extract concepts automatically (requires Ollama)
-concepts = db.concepts("Paris is known for art, cuisine, and fashion")
-# → [("Paris", "LOCATION"), ("art", "ABSTRACT"), ("cuisine", "FOOD"), ...]
-
-# Add custom concept patterns
-db.entity_graph.add_pattern("CRYPTO", [
-    r'\b(bitcoin|ethereum|dogecoin|crypto)\b'
-])
-
-db.remember("Bitcoin hit $100k today")
-concepts = db.concepts("Bitcoin news")
-# → [("Bitcoin", "CRYPTO"), ...]
-```
-
-### Temporal Queries
-
-```python
-# Find recent memories (last 24 hours)
-recent = db.recall("project update", temporal_boost=True, max_age=86400)
-
-# Find memories from specific time range  
-from datetime import datetime, timedelta
-yesterday = datetime.now() - timedelta(days=1)
-old_memories = db.recall("meeting notes", before=yesterday)
-```
-
-### Episode Linking
-
-```python
-# Memories automatically group into episodes
-db.remember("Started working on the presentation")
-db.remember("Added slides about market research") 
-db.remember("Finished the conclusion slide")
-
-# These will be linked as part of the same episode
-episodes = db.get_episodes()
 ```
 
 ## 🖥️ Daemon Mode
 
-Run Synapse as a background service with REST API:
-
-### Setup
-
 ```bash
-# Start daemon
-python synapsed.py --port 8080 --data-dir ./synapse_data
-
-# Or use the CLI
-python cli.py daemon start --port 8080
-```
-
-### HTTP API
-
-```bash
-# Remember
-curl -X POST http://localhost:8080/remember \
-  -H "Content-Type: application/json" \
-  -d '{"content": "Meeting with John at 3pm", "tags": ["meetings"]}'
-
-# Recall
-curl -X POST http://localhost:8080/recall \
-  -H "Content-Type: application/json" \
-  -d '{"query": "John meeting", "limit": 5}'
+synapsed --port 8080 --data-dir ./synapse_data
+synapse remember "Meeting with John at 3pm"
+synapse recall "John meeting"
 ```
 
 ## 🏃‍♂️ Running the Tests
 
 ```bash
-python -m unittest test_synapse test_entity_graph test_episode_graph
+python3 -m unittest test_synapse test_portable test_federation test_entity_graph test_episode_graph -v
 ```
 
-All 45 tests should pass with detailed output of the 5 indexes and concept extraction.
-
-## 📦 Installation
-
-```bash
-# For now, clone and import (pip package coming soon)
-git clone https://github.com/raghuram369/synapse.git
-cd synapse
-
-# No dependencies to install!
-python
->>> from synapse import Synapse
->>> s = Synapse()
->>> # Ready to use!
-```
+All 125 tests pass.
 
 ## 📝 License
 
-MIT License - see [LICENSE](LICENSE) file for details.
-
-## 🤝 Contributing
-
-This is the initial release! We'd love contributors to help with:
-
-- 📦 PyPI packaging (`pip install synapse-ai-memory`)
-- 🔌 Framework integrations (LangChain, CrewAI, etc.)
-- 🧪 More benchmarks and test cases
-- 📖 Documentation and tutorials
-- ⚡ Performance optimizations
-- 🔍 Additional concept categories
-
-## 🚀 What's Next
-
-- [ ] PyPI package (`pip install synapse-ai-memory`)
-- [ ] REST API server mode
-- [ ] Distributed/clustered deployments  
-- [ ] More embedding providers
-- [ ] Graph visualization tools
-- [ ] Framework integrations
+MIT License — see [LICENSE](LICENSE) file for details.
 
 ---
 
-**Synapse**: Memory that works like your brain, not like a chatbot. 🧠
+**Synapse**: Memory + Portability + Federation. One package, three pillars. 🧠
