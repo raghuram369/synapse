@@ -6,7 +6,7 @@
 pip install synapse-ai-memory
 ```
 
-![Version](https://img.shields.io/badge/version-0.8.0-blue) ![Tests](https://img.shields.io/badge/tests-370%20passing-brightgreen) ![Cloud Calls](https://img.shields.io/badge/cloud%20calls-0-green) ![Speed](https://img.shields.io/badge/recall-fast-lightgrey)
+![Version](https://img.shields.io/badge/version-0.9.0-blue) ![Tests](https://img.shields.io/badge/tests-406%20passing-brightgreen) ![Cloud Calls](https://img.shields.io/badge/cloud%20calls-0-green) ![Speed](https://img.shields.io/badge/recall-fast-lightgrey)
 
 ---
 
@@ -102,6 +102,72 @@ synapse inspect --db ~/.synapse/store --json      # tool catalog + stats
 ```
 
 8 tools that make any agent 2x smarter: `remember`, `compile_context`, `timeline`, `what_changed`, `contradictions`, `fact_history`, `sleep`, `stats`.
+
+---
+
+## Capture Anything
+
+![Capture Demo](assets/capture.gif)
+
+```bash
+synapse clip "Meeting notes: Q3 budget approved"     # inline text
+echo "important context" | synapse clip --tag project:x  # pipe from anywhere
+synapse watch --clipboard                             # auto-capture clipboard
+synapse remember --review "sensitive info"            # routes to review queue
+```
+
+Everything you clip is indexed, searchable, and tagged. The clipboard watcher runs until Ctrl+C — every new copy goes to memory.
+
+---
+
+## Review Before Saving (Privacy Mode)
+
+![Review Queue](assets/review-queue.gif)
+
+```bash
+synapse review list                  # see what's pending
+synapse review approve 3             # approve one item
+synapse review approve all           # approve everything
+synapse review reject 5              # discard an item
+synapse review count                 # just the count
+```
+
+Route memories through a pending inbox with `--review`. Nothing gets saved until you approve it. The inspector dashboard shows pending items too.
+
+---
+
+## Runs Forever (Autostart)
+
+```bash
+synapse service install              # autostart on login (launchd/systemd)
+synapse service status               # check if running
+synapse service uninstall            # remove autostart
+```
+
+Memory becomes a background OS capability. Start once, forget about it.
+
+---
+
+## Undo Everything
+
+```bash
+synapse uninstall claude             # restore Claude config from backup
+synapse uninstall openclaw           # remove skill folder
+synapse uninstall all                # clean slate
+```
+
+Every install is reversible. Consumers trust tools they can undo.
+
+---
+
+## Signed Artifacts
+
+```bash
+synapse sign memory-export.brain     # SHA-256 signature
+synapse verify memory-export.brain   # verify integrity
+```
+
+Brain packs and card exports are auto-signed. Share with confidence — recipients can verify nothing was tampered with.
 
 ---
 
@@ -455,7 +521,7 @@ Multiple indexes. One fused result. No LLM in the loop.
 ## Quick Links
 
 - 📦 PyPI: `synapse-ai-memory`
-- 🧪 Tests: `tests/` (370 tests)
+- 🧪 Tests: `tests/` (406 tests)
 - 🔌 Integrations: `integrations/`
 - 🧰 Examples: `examples/`
 - 📈 Benchmarks: `bench/`
