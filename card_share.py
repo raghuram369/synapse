@@ -78,7 +78,48 @@ def _render_markdown(query: str, pack, beliefs: Dict, redact: str | None) -> str
         "",
         "---",
         "_Import: `synapse card import <file>`_",
+        "",
+        "---",
+        "",
+        "**Share this card:**",
+        "```",
+        f"pip install synapse-ai-memory && synapse bench",
+        "```",
     ])
+    return "\n".join(lines)
+
+
+def generate_caption(query: str, pack, stats: Dict | None = None) -> str:
+    """Generate a ready-to-post caption for social media (X/HN/Reddit).
+
+    Returns a plain-text caption with no markdown links.
+    """
+    mem_count = len(getattr(pack, "memories", []) or [])
+    tokens = getattr(pack, "budget_used", 0) or 0
+
+    lines = [
+        f'🧠 "What does my AI remember about {query}?"',
+        "",
+        f"Synapse compiled {mem_count} relevant memories into {tokens} tokens.",
+        "No cloud. No LLM. No API keys. Just local Python.",
+        "",
+    ]
+
+    if stats:
+        if "token_reduction" in stats:
+            lines.append(f"📊 {stats['token_reduction']}% fewer tokens than naive context stuffing")
+        if "recall_precision" in stats:
+            lines.append(f"🎯 {stats['recall_precision']}% recall precision")
+        if "contradictions" in stats:
+            lines.append(f"⚠️ {stats['contradictions']} contradictions flagged")
+        lines.append("")
+
+    lines += [
+        "pip install synapse-ai-memory",
+        "github.com/raghuram369/synapse",
+        "",
+        "#AI #memory #privacy #opensource",
+    ]
     return "\n".join(lines)
 
 

@@ -2288,7 +2288,7 @@ def cmd_doctor_enhanced(args):
 
 def cmd_card_share(args):
     from synapse import Synapse
-    from card_share import share_card
+    from card_share import share_card, generate_caption
 
     db_path = _resolve_db_path(args)
     s = Synapse(db_path)
@@ -2316,6 +2316,16 @@ def cmd_card_share(args):
                 pass
         else:
             print(result)
+
+        # Generate caption if requested
+        if getattr(args, "caption", False):
+            pack = s.compile_context(args.query, budget=args.budget, policy=args.policy)
+            caption = generate_caption(args.query, pack)
+            print("\n" + "─" * 50)
+            print("📋 Ready-to-post caption (copy & paste):")
+            print("─" * 50)
+            print(caption)
+            print("─" * 50)
     finally:
         s.close()
 
@@ -2732,6 +2742,7 @@ def main():
     p_share.add_argument('--redact', choices=['pii', 'names', 'numbers'], default=None)
     p_share.add_argument('--format', choices=['md', 'markdown', 'html'], default='markdown')
     p_share.add_argument('--output', help='Output file path')
+    p_share.add_argument('--caption', action='store_true', help='Generate ready-to-post social media caption')
     p_share.add_argument('--db', help='Synapse AI Memory database path')
     p_share.set_defaults(card_action='share')
 
