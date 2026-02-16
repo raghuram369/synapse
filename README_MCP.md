@@ -1,13 +1,24 @@
-# Synapse AI Memory MCP Server (Claude Desktop)
+# Synapse AI Memory MCP Server
 
-This repository includes an MCP (Model Context Protocol) server that exposes Synapse AI Memory as Claude Desktop tools over stdio.
+Exposes Synapse AI Memory as MCP tools over stdio. Works with **Claude Desktop, Cursor, Windsurf, VS Code (Continue)**, and any MCP-compatible client.
 
-## Files
+## Quick Setup (recommended)
 
-- `mcp_server.py`: MCP server (stdio transport) that imports `synapse.py` from this directory.
-- `claude_desktop_config.json`: example Claude Desktop MCP configuration.
+```bash
+pip install synapse-ai-memory
+synapse install claude      # auto-configures Claude Desktop
+synapse install cursor      # auto-configures Cursor
+synapse install windsurf    # auto-configures Windsurf
+synapse install continue    # auto-configures VS Code Continue
+```
 
-## Install
+Or use the interactive wizard that auto-detects everything:
+
+```bash
+synapse setup
+```
+
+## Manual Setup
 
 1. Install the MCP SDK:
 
@@ -15,28 +26,13 @@ This repository includes an MCP (Model Context Protocol) server that exposes Syn
 python3 -m pip install mcp
 ```
 
-2. From this repo directory, you can sanity-check the server starts (it will wait for JSON-RPC on stdin):
+2. Sanity-check the server starts (waits for JSON-RPC on stdin):
 
 ```bash
 python3 mcp_server.py --data-dir ~/.synapse
 ```
 
-Synapse AI Memory will persist to:
-
-- `~/.synapse/synapse.log`
-- `~/.synapse/synapse.snapshot`
-
-## Configure Claude Desktop
-
-1. Locate Claude Desktop's config file for MCP servers.
-2. Add an entry like `claude_desktop_config.json`, replacing paths with absolute paths on your machine.
-
-Key fields:
-
-- command: `python3`
-- args: absolute path to `mcp_server.py`, plus optional `--data-dir`
-
-Example:
+3. Add to your client's MCP config:
 
 ```json
 {
@@ -44,7 +40,7 @@ Example:
     "synapse-memory": {
       "command": "python3",
       "args": [
-        "/Users/you/path/to/synapse-mcp/mcp_server.py",
+        "/path/to/mcp_server.py",
         "--data-dir",
         "/Users/you/.synapse"
       ]
@@ -52,6 +48,12 @@ Example:
   }
 }
 ```
+
+Config locations:
+- **Claude Desktop**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Cursor**: `~/.cursor/mcp.json`
+- **Windsurf**: `~/.windsurf/mcp.json`
+- **Continue (VS Code)**: `~/.continue/config.json`
 
 ## Exposed Tools
 
