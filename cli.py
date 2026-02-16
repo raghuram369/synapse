@@ -2414,6 +2414,12 @@ def cmd_install(args):
         raise SystemExit(1)
 
     if dry_run or verify_only:
+        if target == "telegram":
+            # Telegram setup is wizard-style and does not currently support a separate
+            # verify-only path; still trigger installer so setup text/flow stays in sync.
+            from installer import install_telegram
+            install_telegram(args.db or APPLIANCE_DB_DEFAULT)
+            return
         enhanced = ClientInstaller.ENHANCED_TARGETS.get(target)
         if enhanced is None:
             print(f"Unknown install target: {target}")

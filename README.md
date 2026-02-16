@@ -32,9 +32,9 @@ That's it. Your AI now has persistent memory. No API keys. No cloud. No config f
 
 ## See It In Action
 
-![Full Demo](assets/full-demo.gif)
+![Cross-AI Demo](assets/cross-ai-demo.gif)
 
-> One memory. Every AI. Install → remember → recall across Claude, GPT, and Gemini. Inbox, vaults, natural forget, contradiction detection, sleep consolidation, beliefs, federation — all in one demo.
+> Tell Claude a fact → GPT knows it → Gemini knows it. Forget once → they all forget. One memory layer, every AI platform. Via MCP — private, local, zero cloud.
 
 ---
 
