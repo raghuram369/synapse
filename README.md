@@ -30,6 +30,14 @@ That's it. Your AI now has persistent memory. No API keys. No cloud. No config f
 
 ---
 
+## See It In Action
+
+![Full Demo](assets/full-demo.gif)
+
+> One memory. Every AI. Install → remember → recall across Claude, GPT, and Gemini. Inbox, vaults, natural forget, contradiction detection, sleep consolidation, beliefs, federation — all in one demo.
+
+---
+
 ## What's New in 0.11.0
 
 ### 3 new capabilities to make memory safer and easier to manage
