@@ -251,7 +251,25 @@ class SynapseClient:
         request = {"cmd": "stats"}
         response = self._send_request(request)
         return response["data"]
-    
+
+    def policy_set(self, preset: str) -> Dict[str, Any]:
+        """Set active policy preset."""
+        request = {"cmd": "policy", "action": "set", "preset": preset}
+        response = self._send_request(request)
+        return response["data"]
+
+    def policy_show(self) -> Optional[Dict[str, Any]]:
+        """Return currently active policy preset."""
+        request = {"cmd": "policy", "action": "show"}
+        response = self._send_request(request)
+        return response["data"]
+
+    def policy_list(self) -> Dict[str, Any]:
+        """List all available policy presets."""
+        request = {"cmd": "policy", "action": "list"}
+        response = self._send_request(request)
+        return response["data"]
+
     def ping(self) -> str:
         """Ping the server.
         

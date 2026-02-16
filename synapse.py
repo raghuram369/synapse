@@ -40,6 +40,7 @@ from embeddings import EmbeddingIndex
 from sleep import SleepReport, SleepRunner
 from belief import BeliefTracker, BeliefVersion
 from forgetting import ForgettingPolicy
+from policies import PolicyManager
 from evidence import EvidenceCompiler
 from normalization import ENTITY_NORMALIZER
 from entity_graph import extract_concepts, expand_query
@@ -160,6 +161,7 @@ class Synapse:
         self.evidence_compiler = EvidenceCompiler()
         self.forgetting_policy = ForgettingPolicy(self)
         self.triple_index = TripleIndex()
+        self.policy_manager = PolicyManager(self)
         
         # Embedding index (optional — uses Ollama if available)
         self.embedding_index = EmbeddingIndex()
@@ -309,6 +311,13 @@ class Synapse:
                 f"Invalid memory_type: {memory_type}. Must be one of {MEMORY_TYPES}"
             )
 
+        memory_type = str(memory_type)
+        content, metadata = self._apply_policy_rules(
+            content=content,
+            metadata=metadata,
+            memory_type=memory_type,
+        )
+
         if extract:
             memory = self._remember_with_extraction(
                 content, memory_type, links, metadata, episode, deduplicate, now,
@@ -321,7 +330,10 @@ class Synapse:
             )
 
         if getattr(self, '_is_sleeping', False):
+            self._apply_policy_retention()
             return memory
+
+        self._apply_policy_retention()
 
         if self.should_sleep():
             try:
@@ -330,6 +342,213 @@ class Synapse:
                 logger.exception("Auto-sleep failed during remember()")
 
         return memory
+
+    def _apply_policy_rules(
+        self,
+        content: str,
+        metadata: Optional[Dict[str, Any]],
+        memory_type: str,
+    ) -> tuple[str, Optional[Dict[str, Any]]]:
+        """Apply active policy hooks before storing memory content.
+
+        Returns sanitized content and metadata pair.
+        """
+        policy = self.policy_manager.get_active()
+        if not policy:
+            return content, metadata
+
+        metadata_dict = dict(metadata or {}) if isinstance(metadata, dict) else {}
+        tags = set(self._coerce_tags(metadata_dict.get("tags")))
+
+        if policy.get("redact_pii"):
+            pii_patterns = policy.get("pii_patterns")
+            content = self.policy_manager.auto_redact(content, pii_patterns=pii_patterns)
+
+        if policy.get("auto_tag_project"):
+            for tag in self.policy_manager.detect_project_tags(content):
+                tags.add(tag)
+
+        if policy.get("keep_tags"):
+            if memory_type == "preference":
+                tags.add("preference")
+            if self._has_commitment_language(content):
+                tags.add("commitment")
+
+        if tags:
+            metadata_dict["tags"] = sorted(set(tags))
+
+        if metadata is not None and isinstance(metadata, dict):
+            metadata.clear()
+            metadata.update(metadata_dict)
+        elif metadata_dict:
+            metadata = metadata_dict
+
+        return content, metadata
+
+    def _apply_policy_retention(self) -> Dict[str, Any]:
+        """Run active policy retention rules."""
+        policy = self.policy_manager.get_active()
+        if not policy:
+            return {}
+
+        ttl_days = policy.get("ttl_days")
+        active_name = self._active_preset_name()
+        report: Dict[str, Any] = {}
+
+        if ttl_days is not None:
+            try:
+                ttl_days_i = int(ttl_days)
+                if ttl_days_i > 0:
+                    pin_tag = self._coerce_text(policy.get("pin_tag"))
+                    if pin_tag:
+                        now = time.time()
+                        ttl_deleted: List[int] = []
+                        for memory_id, memory_data in list(self.store.memories.items()):
+                            metadata = self._parse_metadata(memory_data.get("metadata"))
+                            tags = set(self._coerce_tags(metadata.get("tags")))
+                            if pin_tag in tags:
+                                continue
+                            created_at = float(memory_data.get("created_at", 0.0) or 0.0)
+                            if now - created_at > ttl_days_i * 86400.0 and self.forget(memory_id):
+                                ttl_deleted.append(memory_id)
+                        report["ttl"] = {
+                            "action": "apply_ttl",
+                            "default_ttl_days": float(ttl_days_i),
+                            "matched_count": len(ttl_deleted),
+                            "deleted_count": len(ttl_deleted),
+                            "deleted_ids": sorted(ttl_deleted),
+                        }
+                    else:
+                        report["ttl"] = self.forgetting_policy.apply_ttl(default_ttl_days=ttl_days_i)
+            except (TypeError, ValueError):
+                pass
+
+        if not policy.get("auto_prune"):
+            return report
+
+        prune_min_access = policy.get("prune_min_access")
+        try:
+            prune_min_access_i = int(prune_min_access) if prune_min_access is not None else 0
+        except (TypeError, ValueError):
+            prune_min_access_i = 0
+
+        min_strength = 0.2 if active_name == "minimal" else 0.1
+        max_age_days = 90.0
+        if ttl_days is not None:
+            try:
+                max_age_days = float(ttl_days)
+            except (TypeError, ValueError):
+                max_age_days = 90.0
+
+        keep_tags = set(self._coerce_tags(policy.get("keep_tags")))
+        pin_tag = self._coerce_text(policy.get("pin_tag"))
+
+        candidate_ids = self.prune(
+            min_strength=min_strength,
+            min_access=prune_min_access_i,
+            max_age_days=float(max_age_days),
+            dry_run=True,
+        )
+        candidate_set = set(candidate_ids)
+
+        if active_name == "minimal":
+            now = time.time()
+            for memory_id, memory_data in list(self.store.memories.items()):
+                metadata = self._parse_metadata(memory_data.get("metadata"))
+                tags = set(self._coerce_tags(metadata.get("tags")))
+                if keep_tags.intersection(tags):
+                    continue
+                access_count = int(memory_data.get("access_count", 0) or 0)
+                if access_count > prune_min_access_i:
+                    continue
+                created_at = float(memory_data.get("created_at", 0.0) or 0.0)
+                age_days = (now - created_at) / 86400.0
+                if age_days < max_age_days:
+                    continue
+                candidate_set.add(memory_id)
+
+        pruned: List[int] = []
+        for memory_id in sorted(candidate_set):
+            memory_data = self.store.memories.get(memory_id)
+            if not memory_data:
+                continue
+
+            metadata = self._parse_metadata(memory_data.get("metadata"))
+            tags = self._coerce_tags(metadata.get("tags"))
+
+            if pin_tag and pin_tag in tags:
+                continue
+
+            if self._active_preset_name() == "minimal" and keep_tags:
+                if keep_tags.intersection(set(tags)):
+                    continue
+
+            if self.forget(memory_id):
+                pruned.append(memory_id)
+
+        if pruned:
+            report["policy_prune"] = {
+                "deleted_count": len(pruned),
+                "deleted_ids": sorted(pruned),
+            }
+
+        return report
+
+    @staticmethod
+    def _coerce_text(value: Any) -> str:
+        return str(value).strip() if value is not None else ""
+
+    @staticmethod
+    def _coerce_tags(value: Any) -> List[str]:
+        if not value:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if isinstance(value, (list, tuple, set)):
+            normalized: List[str] = []
+            for item in value:
+                text = str(item).strip()
+                if text:
+                    normalized.append(text)
+            return normalized
+        return []
+
+    @staticmethod
+    def _parse_metadata(value: Any) -> Dict[str, Any]:
+        if isinstance(value, dict):
+            return dict(value)
+        try:
+            if isinstance(value, str) and value:
+                parsed = json.loads(value)
+                return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+        return {}
+
+    @staticmethod
+    def _has_commitment_language(content: str) -> bool:
+        if not content:
+            return False
+        lowered = content.lower()
+        patterns = [
+            " i will ",
+            "I'll ",
+            "i will",
+            "i am going to",
+            "committed",
+            "commit",
+            "plan to",
+            "intend",
+            "must",
+        ]
+        for token in patterns:
+            if token.strip().lower() in lowered:
+                return True
+        return False
+
+    def _active_preset_name(self) -> str:
+        policy = self.policy_manager.get_active() or {}
+        return str(policy.get("name", "").strip())
     
     def _remember_with_extraction(self, content: str, memory_type: str, 
                                   links: Optional[List], metadata: Optional[Dict],
@@ -1241,6 +1460,20 @@ class Synapse:
     def set_retention_rules(self, rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Apply declarative retention rules."""
         return self.forgetting_policy.retention_rules(rules)
+
+    def policy(self, preset: str = None):
+        """Apply a named policy preset and return active policy metadata."""
+        if preset is None:
+            return self.policy_manager.get_active()
+        return self.policy_manager.apply(preset)
+
+    def list_presets(self) -> Dict[str, Any]:
+        """List available memory policy presets."""
+        return self.policy_manager.list_presets()
+
+    def get_active_policy(self) -> Optional[Dict[str, Any]]:
+        """Return active policy metadata."""
+        return self.policy_manager.get_active()
 
     def forget_topic(self, topic: str):
         """Forget all memories related to a topic/concept."""

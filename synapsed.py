@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import json
 import logging
 import signal
@@ -176,6 +177,9 @@ class SynapseServer:
                 
             elif cmd == "stats":
                 return self._cmd_stats(request)
+
+            elif cmd == "policy":
+                return self._cmd_policy(request)
                 
             else:
                 return {"ok": False, "error": f"Unknown command: {cmd}"}
@@ -319,6 +323,24 @@ class SynapseServer:
                 "data_directory": str(self.data_dir.absolute())
             }
         }
+
+    def _cmd_policy(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle policy command."""
+        action = str(request.get("action", "show")).strip().lower()
+        if action in {"show", ""}:
+            return {"ok": True, "data": self.synapse.policy()}
+        if action == "list":
+            return {"ok": True, "data": self.synapse.list_presets()}
+        if action == "set":
+            preset = self._coerce_text(request.get("preset"))
+            if not preset:
+                return {"ok": False, "error": "Missing 'preset' field"}
+            return {"ok": True, "data": self.synapse.policy(preset)}
+        return {"ok": False, "error": f"Unsupported policy action: {action}"}
+
+    @staticmethod
+    def _coerce_text(value: Any) -> str:
+        return str(value).strip() if value is not None else ""
     
     def _delayed_shutdown(self):
         """Delayed shutdown to allow response to be sent."""
@@ -333,18 +355,62 @@ class SynapseServer:
         self.running = False
         if self.server_socket:
             self.server_socket.close()
-    
+
     def _cleanup(self):
         """Clean up resources."""
         print("🧹 Cleaning up...")
-        
+
         if self.synapse:
             self.synapse.close()
-            
+
         if self.server_socket:
             self.server_socket.close()
-            
+
         print("✅ Shutdown complete")
+
+
+def _resolve_data_dir(args_db: Optional[str], args_data_dir: Optional[str]) -> str:
+    source = args_db if args_db is not None else args_data_dir or "./synapse_data"
+    expanded = os.path.expanduser(source)
+    path = Path(expanded)
+    if path.suffix:
+        return str(path.parent if str(path.parent) else Path("."))
+    return str(path)
+
+
+def _write_pid_file(path: Optional[str], pid: int) -> None:
+    if not path:
+        return
+    expanded = os.path.expanduser(path)
+    os.makedirs(os.path.dirname(expanded), exist_ok=True)
+    with open(expanded, "w", encoding="utf-8") as fp:
+        fp.write(str(int(pid)))
+
+
+def _daemonize(path: Optional[str]) -> bool:
+    """Daemonize process when running on POSIX. Returns True for parent process."""
+    if os.name != "posix" or not hasattr(os, "fork"):
+        return False
+
+    first_pid = os.fork()
+    if first_pid > 0:
+        return True
+
+    os.setsid()
+    second_pid = os.fork()
+    if second_pid > 0:
+        os._exit(0)
+
+    os.chdir("/")
+    os.umask(0)
+    with open(os.devnull, "rb", buffering=0) as null_in:
+        os.dup2(null_in.fileno(), 0)
+    with open(os.devnull, "ab", buffering=0) as null_out:
+        os.dup2(null_out.fileno(), 1)
+        os.dup2(null_out.fileno(), 2)
+
+    _write_pid_file(path, os.getpid())
+    return False
 
 
 def main():
@@ -352,16 +418,30 @@ def main():
     parser = argparse.ArgumentParser(description="Synapse Daemon Server")
     parser.add_argument('--host', default='127.0.0.1', help='Host to bind to')
     parser.add_argument('--port', type=int, default=7654, help='Port to bind to')
-    parser.add_argument('--data-dir', default='./synapse_data', help='Data directory')
+    parser.add_argument('--data-dir', default=None, help='Data directory')
+    parser.add_argument('--db', default=None, help='Database path (or data directory)')
+    parser.add_argument('--mode', choices=['appliance', 'full'], default='full',
+                        help='Synapse startup mode')
+    parser.add_argument('--daemon', action='store_true', help='Run as daemon process')
+    parser.add_argument('--pid-file', default=None, help='Write PID to this file')
     parser.add_argument('--extract', action='store_true', 
                        help='Enable fact extraction by default')
     
     args = parser.parse_args()
+
+    if args.daemon and _daemonize(args.pid_file):
+        return
+
+    data_dir = _resolve_data_dir(args.db, args.data_dir)
+    if args.mode == 'appliance':
+        logger.info("Starting Synapse daemon in appliance mode")
+    else:
+        logger.info("Starting Synapse daemon in full mode")
     
     server = SynapseServer(
         host=args.host,
         port=args.port, 
-        data_dir=args.data_dir,
+        data_dir=data_dir,
         extract_default=args.extract
     )
     

@@ -8,7 +8,7 @@
 pip install synapse-ai-memory
 ```
 
-![Version](https://img.shields.io/badge/version-0.7.0-blue) ![Tests](https://img.shields.io/badge/tests-240%20passing-brightgreen) ![Cloud Calls](https://img.shields.io/badge/cloud%20calls-0-green) ![Speed](https://img.shields.io/badge/recall-fast-lightgrey)
+![Version](https://img.shields.io/badge/version-0.8.0-blue) ![Tests](https://img.shields.io/badge/tests-305%20passing-brightgreen) ![Cloud Calls](https://img.shields.io/badge/cloud%20calls-0-green) ![Speed](https://img.shields.io/badge/recall-fast-lightgrey)
 
 ---
 
@@ -130,9 +130,20 @@ s = Synapse(":memory:")
 # ... add memories over time ...
 report = s.sleep(verbose=True)
 print(report)
+
+# Human-readable digest (great for daily summaries)
+print(report.to_digest())
 ```
 
-Sleep includes (high-level): consolidation, promotion (episodic -> semantic), pattern mining, pruning, contradiction scanning, graph cleanup, and community refresh.
+```bash
+# CLI: run sleep with human-readable digest output
+synapse sleep --digest --db ~/.synapse/synapse_store
+
+# Verbose internals
+synapse sleep --verbose --db ~/.synapse/synapse_store
+```
+
+Sleep includes: consolidation, promotion (episodic → semantic), pattern mining, pruning, contradiction scanning, graph cleanup, community refresh, and hot topic tracking. The digest output includes promoted facts, discovered patterns, contradictions, cleanup stats, hot topics, and actionable suggestions.
 
 ---
 
@@ -191,7 +202,22 @@ synapse stats --db ~/.synapse/synapse
 
 ---
 
-## MCP Memory Appliance (v0.7.0)
+## Consumer Utilities (v0.8.0)
+
+v0.8.0 adds everything you need to go from `pip install` to running in production:
+
+- **One-line install:** `synapse install claude` / `synapse install openclaw` — auto-configures MCP for Claude Desktop or OpenClaw
+- **Daemon lifecycle:** `synapse up` / `synapse down` / `synapse status` — run as background service
+- **Policy presets:** `minimal`, `private`, `work`, `ephemeral` — pre-tuned retention/privacy rules, no config needed
+- **Importers:** `synapse import chat export.json` / `synapse import notes ~/notes/` / `synapse import clipboard` — bring your existing data
+- **Inspector:** `synapse inspect --web` — local web dashboard for browsing memories, graph, and stats
+- **Demo runner:** `synapse demo --scenario getting-started` — interactive walkthrough scenarios
+- **Sleep digest:** `synapse sleep --digest` — human-readable maintenance report with promoted facts, patterns, contradictions, hot topics, and suggestions
+- **Integration snippets:** 5-line drop-in patterns for every supported framework
+
+---
+
+## MCP Memory Appliance
 
 Synapse can run as an MCP memory appliance with a compact tool surface and built-in operability commands.
 
@@ -334,37 +360,58 @@ Pure Python. No embeddings API. No GPU. These numbers come from indexes alone.
 
 ## Works With Everything
 
-### Claude / Anthropic
+### MCP Tool Mode
+`examples/snippets/mcp_tool_mode.py`
+```python
+'''MCP Tool Mode: Claude Desktop / any MCP client'''
+# 1. Install: pip install synapse-ai-memory
+# 2. Configure: synapse install claude
+# 3. Restart Claude Desktop
+# That's it. Claude now has persistent memory.
+```
 
+### Library Mode
+`examples/snippets/library_mode.py`
 ```python
 from synapse import Synapse
-from integrations.claude import SynapseClaudeMemory
-
-memory = SynapseClaudeMemory(synapse=Synapse("claude_memory"))
-context = memory.get_context("Can you recommend a restaurant?")
-# → Recalls shellfish allergy from 3 weeks ago, suggests safe options
+s = Synapse('my-agent')
+s.remember('User prefers dark mode')
+results = s.recall('what theme?')
+context = s.compile_context('user preferences', budget=2000)
 ```
 
-### OpenAI / ChatGPT
-
+### Daemon Mode
+`examples/snippets/daemon_mode.py`
 ```python
-from integrations.openai import SynapseGPTMemory
-
-memory = SynapseGPTMemory(synapse=Synapse("gpt_memory"))
-context = memory.get_context("What should I have for lunch?")
-# → Recalls vegetarian preference, suggests accordingly
+# Terminal 1: start Synapse
+# $ synapse up --port 9470
+# Terminal 2: any HTTP client
+import requests
+r = requests.post('http://localhost:9470/tool', json={'tool': 'remember', 'args': {'content': 'User likes jazz'}})
 ```
 
-### LangChain / LangGraph / CrewAI
-
+### Chat Mode
+`examples/snippets/chat_mode.py`
 ```python
-from integrations.langchain import SynapseMemory, SynapseRetriever
-from integrations.langgraph import SynapseStore, SynapseCheckpointer
-from integrations.crewai import SynapseCrewMemory
-# Drop-in replacements. See integrations/ for full docs.
+from synapse import Synapse
+s = Synapse('chat-bot')
+# In your message handler:
+if s.command_parser.is_memory_command(user_message):
+    response = s.command(user_message)  # handles /mem remember, /mem recall, etc.
 ```
 
-Tool-use mode also supported — let your AI decide what to remember. See [`integrations/`](integrations/) for full examples.
+### Framework Mode
+`examples/snippets/framework_mode.py`
+```python
+from synapse import Synapse
+from integrations.langchain import SynapseMemory
+memory = SynapseMemory(synapse=Synapse('langchain-agent'))
+# Drop into any LangChain chain as memory=memory
+chain.memory = memory
+```
+
+Tool-use mode also supported via MCP and integrations.
+See [`integrations/`](integrations/) for LangChain / LangGraph / CrewAI / Claude / OpenAI examples.
 
 ---
 
@@ -434,7 +481,7 @@ Multiple indexes. One fused result. No LLM in the loop.
 ## Quick Links
 
 - 📦 PyPI: `synapse-ai-memory`
-- 🧪 Tests: `tests/` (240 tests)
+- 🧪 Tests: `tests/` (305 tests)
 - 🔌 Integrations: `integrations/`
 - 🧰 Examples: `examples/`
 - 📈 Benchmarks: `bench/`

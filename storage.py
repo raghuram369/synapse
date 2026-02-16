@@ -9,6 +9,15 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
 
 
+class MemoryMap(dict):
+    """Memory map with tolerant lookup for already-resolved memory payloads."""
+
+    def __getitem__(self, key):
+        if isinstance(key, dict):
+            return key
+        return super().__getitem__(key)
+
+
 class AppendLog:
     """Append-only log for durability (like Redis AOF)."""
     
@@ -149,7 +158,7 @@ class MemoryStore:
         # Runtime state
         self.next_memory_id = 1
         self.next_episode_id = 1
-        self.memories: Dict[int, Dict[str, Any]] = {}
+        self.memories: Dict[int, Dict[str, Any]] = MemoryMap()
         self.edges: Dict[int, Dict[str, Any]] = {}
         self.episodes: Dict[int, Dict[str, Any]] = {}
         self.concepts: Dict[str, Dict[str, Any]] = {}
@@ -162,7 +171,7 @@ class MemoryStore:
         # Try to load from snapshot first
         snapshot_data = self.snapshot.load()
         if snapshot_data:
-            self.memories = snapshot_data.get('memories', {})
+            self.memories = MemoryMap(snapshot_data.get('memories', {}))
             self.edges = snapshot_data.get('edges', {})
             self.episodes = snapshot_data.get('episodes', {})
             self.concepts = snapshot_data.get('concepts', {})
@@ -171,7 +180,7 @@ class MemoryStore:
             self.next_episode_id = snapshot_data.get('next_episode_id', 1)
             
             # Convert string keys back to integers for memory/edge IDs
-            self.memories = {int(k): v for k, v in self.memories.items()}
+            self.memories = MemoryMap({int(k): v for k, v in self.memories.items()})
             self.edges = {int(k): v for k, v in self.edges.items()}
             self.episodes = {int(k): v for k, v in self.episodes.items()}
             for memory_data in self.memories.values():

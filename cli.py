@@ -13,6 +13,8 @@ import asyncio
 import glob
 import json
 import os
+import signal
+import subprocess
 import tempfile
 import sys
 import time
@@ -22,6 +24,7 @@ from typing import Any, Dict
 
 from client import SynapseClient, SynapseRequestError
 from exceptions import SynapseConnectionError
+from demo_runner import DemoRunner
 
 
 # ─── Formatting helpers ──────────────────────────────────────────────────────
@@ -77,6 +80,8 @@ def _resolve_db_path(args) -> str:
 
 APPLIANCE_DB_DEFAULT = "./synapse_store"
 APPLIANCE_BANNER = "Synapse AI Memory v0.6.0 — MCP server ready"
+APPLIANCE_DAEMON_PORT = 9470
+APPLIANCE_STATE_DIR = os.path.expanduser("~/.synapse")
 
 
 def _resolve_appliance_db_path(args, default: str = APPLIANCE_DB_DEFAULT) -> str:
@@ -166,6 +171,136 @@ def _collect_store_snapshot(db_path: str) -> Dict[str, Any]:
         "active_memories": hook.get("active_memory_count"),
         "store_path": db_path,
     }
+
+
+def _appliance_state_dir() -> str:
+    return APPLIANCE_STATE_DIR
+
+
+def _appliance_pid_path() -> str:
+    return os.path.join(_appliance_state_dir(), "synapse.pid")
+
+
+def _daemon_state() -> Dict[str, Any]:
+    path = _appliance_pid_path()
+    try:
+        with open(path, "r", encoding="utf-8") as fp:
+            text = fp.read().strip()
+    except (FileNotFoundError, OSError):
+        return {}
+    try:
+        return {"pid": int(text)}
+    except (TypeError, ValueError):
+        return {}
+
+
+def _read_daemon_pid() -> int | None:
+    return _daemon_state().get("pid")
+
+
+def _write_daemon_pid(path: str, pid: int) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fp:
+        fp.write(str(int(pid)))
+
+
+def _clear_daemon_pid(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _pid_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _format_uptime(seconds: float | None) -> str:
+    if seconds is None or seconds < 0:
+        return "unknown"
+    total = int(seconds)
+    if total < 60:
+        return f"{total}s"
+    hours, remainder = divmod(total, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        days, hours = divmod(hours, 24)
+        if days:
+            return f"{days}d {hours}h {minutes}m {seconds}s"
+        return f"{hours}h {minutes}m {seconds}s"
+    return f"{minutes}m {seconds}s"
+
+
+def _wait_for_pid_file(path: str, timeout: float = 2.0, poll_interval: float = 0.05) -> int | None:
+    deadline = time.time() + timeout
+    if path is None:
+        path = _appliance_pid_path()
+    while time.time() < deadline:
+        try:
+            with open(path, "r", encoding="utf-8") as fp:
+                text = fp.read().strip()
+            return int(text)
+        except (FileNotFoundError, OSError, ValueError):
+            time.sleep(poll_interval)
+            continue
+    return None
+
+
+def _daemon_command(port: int, db_path: str, mode: str) -> list[str]:
+    return [
+        sys.executable,
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "synapsed.py"),
+        "--port", str(port),
+        "--db", db_path,
+        "--mode", mode,
+        "--daemon",
+        "--pid-file", _appliance_pid_path(),
+    ]
+
+
+def _start_synapse_daemon(command: list[str]):
+    return subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def _send_signal(pid: int, sig: int) -> None:
+    os.kill(pid, sig)
+
+
+def _collect_sleep_status(db_path: str) -> Dict[str, Any]:
+    from synapse import Synapse
+    syn = Synapse(db_path)
+    try:
+        return syn.sleep_runner.schedule_hook()
+    finally:
+        syn.close()
+
+
+def _store_file_size(path: str) -> int:
+    if not path or path == ":memory:":
+        return 0
+    base = os.path.abspath(os.path.expanduser(path))
+    total = 0
+    for suffix in ("", ".log", ".snapshot", ".state"):
+        candidate = f"{base}{suffix}"
+        try:
+            total += int(os.path.getsize(candidate))
+        except OSError:
+            continue
+    return total
 
 
 def _scan_portable_exports(db_path: str) -> list[tuple[str, bool, str]]:
@@ -714,6 +849,53 @@ def cmd_stats(args, client: SynapseClient | None = None):
         sys.exit(1)
 
 
+def _format_policy_overview(policy: Dict[str, Any] | None) -> None:
+    if not policy:
+        print("No active policy. Set one with `synapse policy set <preset>`.")
+        return
+
+    name = str(policy.get("name", "")).strip() or "unknown"
+    print(f"✅ Active policy: {name}")
+    description = policy.get("description")
+    if description:
+        print(f"  description: {description}")
+    print(f"  ttl_days: {policy.get('ttl_days')}")
+    print(f"  auto_prune: {policy.get('auto_prune')}")
+    print(f"  prune_min_access: {policy.get('prune_min_access')}")
+    print(f"  redact_pii: {policy.get('redact_pii')}")
+    if policy.get("keep_tags"):
+        print(f"  keep_tags: {policy.get('keep_tags')}")
+    if policy.get("auto_tag_project"):
+        print("  auto_tag_project: enabled")
+    if policy.get("pin_tag"):
+        print(f"  pin_tag: {policy.get('pin_tag')}")
+    if policy.get("pii_patterns"):
+        print(f"  pii_patterns: {policy.get('pii_patterns')}")
+
+
+def cmd_policy(args, client: SynapseClient):
+    try:
+        action = getattr(args, "policy_action", "show")
+        if action == "list":
+            presets = client.policy_list()
+            print("Available policy presets:")
+            for name, cfg in presets.items():
+                desc = cfg.get("description", "")
+                print(f"  - {name}: {desc}")
+            return
+
+        if action == "set":
+            active = client.policy_set(args.preset)
+            _format_policy_overview(active)
+            return
+
+        policy = client.policy_show()
+        _format_policy_overview(policy)
+    except SynapseRequestError as e:
+        print(f"❌ Request error: {e}")
+        sys.exit(1)
+
+
 def cmd_ping(args, client: SynapseClient):
     try:
         response = client.ping()
@@ -1028,6 +1210,28 @@ def cmd_consolidate(args):
     s.close()
 
 
+def cmd_sleep(args):
+    from synapse import Synapse
+
+    s = Synapse(args.db or ":memory:")
+    try:
+        report = s.sleep(verbose=getattr(args, "verbose", False))
+        if getattr(args, "digest", False):
+            print(report.to_digest())
+            return
+
+        print("🌙 Sleep complete")
+        print(f"  Consolidated: {report.consolidated}")
+        print(f"  Promoted: {report.promoted}")
+        print(f"  Patterns found: {report.patterns_found}")
+        print(f"  Contradictions: {report.contradictions}")
+        print(f"  Pruned: {report.pruned}")
+        print(f"  Graph cleaned: {report.graph_cleaned}")
+        print(f"  Duration: {report.duration_ms:.2f} ms")
+    finally:
+        s.close()
+
+
 def cmd_export(args):
     from portable import export_synapse
     from synapse import Synapse
@@ -1045,10 +1249,53 @@ def cmd_export(args):
 
 
 def cmd_import(args):
+    from importers import ImportReport, MemoryImporter
     from portable import import_synapse
     from synapse import Synapse
+
     db_path = args.db or ":memory:"
     s = Synapse(db_path)
+
+    mode = (args.input or "").strip().lower()
+    path = args.path
+
+    if mode in {"chat", "notes", "jsonl", "csv", "clipboard"}:
+        if mode in {"chat", "notes", "jsonl", "csv"} and not path:
+            raise ValueError(f"`{mode}` import requires a path argument")
+
+        if mode == "chat":
+            importer: ImportReport = MemoryImporter(s).from_chat_transcript(
+                path, format=args.format
+            )
+            label = "chat transcript"
+        elif mode == "notes":
+            importer = MemoryImporter(s).from_markdown_folder(
+                path, recursive=getattr(args, "recursive", False)
+            )
+            label = "markdown notes"
+        elif mode == "jsonl":
+            importer = MemoryImporter(s).from_jsonl(
+                path, text_field=args.text_field, metadata_fields=None
+            )
+            label = "jsonl"
+        elif mode == "csv":
+            importer = MemoryImporter(s).from_csv(path, text_column=args.text_column)
+            label = "csv"
+        else:
+            importer = MemoryImporter(s).from_clipboard()
+            label = "clipboard"
+
+        print(f"✓ Imported from {label} source")
+        print(f"  Imported: {importer.imported}")
+        print(f"  Skipped: {importer.skipped}")
+        print(f"  Errors: {importer.errors}")
+        print(f"  Duration: {importer.duration_ms:.2f} ms")
+        if importer.tags_created:
+            print(f"  Tags created: {', '.join(importer.tags_created)}")
+        s.close()
+        return
+
+    # Legacy `.synapse` import
     stats = import_synapse(s, args.input, deduplicate=not args.no_dedup,
                            similarity_threshold=args.threshold)
     print(f"✓ Imported from {args.input}")
@@ -1106,6 +1353,18 @@ def cmd_inspect(args):
             print(f"  - {name}: {score:.3f}")
     else:
         print("  - none")
+
+
+def cmd_inspector(args):
+    from inspector import SynapseInspector
+    from synapse import Synapse
+
+    syn = Synapse(args.db or ":memory:")
+    inspector = SynapseInspector(syn, port=args.port)
+    try:
+        inspector.start()
+    finally:
+        syn.close()
 
 
 def cmd_inspect_export(args):
@@ -1205,6 +1464,134 @@ def cmd_doctor(args):
         sys.exit(1)
 
     print(_green("Health check complete"))
+
+
+def cmd_up(args):
+    db_path = _resolve_appliance_db_path(args)
+    port = args.port
+    mode = args.mode
+
+    pid_path = _appliance_pid_path()
+    existing_pid = _read_daemon_pid()
+    if existing_pid is not None and _pid_is_running(existing_pid):
+        print(f"⚠️  Synapse already running (pid {existing_pid}, port {port})")
+        return
+
+    if existing_pid is not None:
+        _clear_daemon_pid(pid_path)
+
+    command = _daemon_command(port=port, db_path=db_path, mode=mode)
+    process = _start_synapse_daemon(command)
+    daemon_pid = _wait_for_pid_file(pid_path)
+    if daemon_pid is None:
+        daemon_pid = process.pid
+        _write_daemon_pid(pid_path, daemon_pid)
+
+    print(f"🧠 Synapse AI Memory running (pid {daemon_pid}, port {port})")
+    print(f"MCP stdio: synapse serve | HTTP: http://localhost:{port}")
+
+
+def cmd_down(args):
+    pid_path = _appliance_pid_path()
+    pid = _read_daemon_pid()
+
+    if pid is None:
+        _clear_daemon_pid(pid_path)
+        print("Synapse stopped.")
+        return
+
+    running = _pid_is_running(pid)
+    if running:
+        _send_signal(pid, signal.SIGTERM)
+        deadline = time.time() + 2.0
+        while time.time() < deadline and running:
+            time.sleep(0.05)
+            running = _pid_is_running(pid)
+        if running:
+            _send_signal(pid, signal.SIGKILL)
+            deadline = time.time() + 0.5
+            while time.time() < deadline and running:
+                time.sleep(0.05)
+                running = _pid_is_running(pid)
+
+    _clear_daemon_pid(pid_path)
+    print("Synapse stopped.")
+
+
+def cmd_status(args):
+    db_path = _resolve_appliance_db_path(args)
+    port = args.port
+
+    pid = _read_daemon_pid()
+    pid_file = _appliance_pid_path()
+    running = pid is not None and _pid_is_running(pid)
+    started_at = os.path.getmtime(pid_file) if os.path.exists(pid_file) else None
+    uptime = _format_uptime(time.time() - started_at) if running and started_at is not None else _dim("n/a")
+
+    state_text = _green("running") if running else _red("stopped")
+    print(_bold("🧠 Synapse Memory Status"))
+    print(f"  State: {state_text}")
+    print(f"  Uptime: {uptime}")
+    print(f"  Port: {_blue(str(port))}")
+    print(f"  DB: {_blue(db_path)}")
+
+    if not running and pid is not None:
+        _clear_daemon_pid(pid_file)
+        running = False
+
+    if not running:
+        return
+
+    try:
+        snapshot = _collect_store_snapshot(db_path)
+    except Exception as exc:
+        print(f"  Snapshot unavailable: {exc}")
+        snapshot = {
+            "memory_count": 0,
+            "concept_count": 0,
+            "edge_count": 0,
+            "contradiction_count": 0,
+            "top_hot_concepts": [],
+            "last_sleep_at": None,
+        }
+
+    try:
+        sleep_status = _collect_sleep_status(db_path)
+    except Exception:
+        sleep_status = None
+
+    print(_bold("  Memory"))
+    print(f"    Count: {_cyan(str(snapshot['memory_count']))}")
+    print(f"    Concepts: {_cyan(str(snapshot['concept_count']))}")
+    print(f"    Edges: {_cyan(str(snapshot['edge_count']))}")
+    print(f"    Contradictions: {_red(str(snapshot['contradiction_count']))}")
+
+    last_sleep = snapshot.get("last_sleep_at")
+    if last_sleep is None:
+        print("    Last sleep: never")
+    else:
+        print(f"    Last sleep: {_format_datetime(last_sleep)}")
+
+    if sleep_status is None:
+        print("    Auto-sleep: unavailable")
+    else:
+        should_sleep = "on" if sleep_status.get("should_sleep") else "off"
+        if should_sleep == "on":
+            due = _format_datetime(sleep_status.get("next_due_at") or time.time())
+            print(f"    Auto-sleep: {_yellow('on')} (next due: {due})")
+        else:
+            print(f"    Auto-sleep: {_yellow('off')}")
+
+    store_size = _store_file_size(db_path)
+    print(f"    Store size: {_human_size(store_size)}")
+
+    print(_bold("  Top 5 hot concepts:"))
+    hot = snapshot.get("top_hot_concepts") or []
+    if hot:
+        for name, score in hot[:5]:
+            print(f"    - {name}: {score:.3f}")
+    else:
+        print("    - none")
 
 
 def cmd_serve(args):
@@ -1509,6 +1896,43 @@ def cmd_checkpoint_delete(args):
         print(f"⚠️  Checkpoint '{args.name}' not found")
 
 
+def cmd_demo(args):
+    runner = DemoRunner()
+    output = "markdown" if args.markdown else "terminal"
+
+    if args.scenario == "all":
+        result = runner.run_all(output=output)
+    else:
+        result = runner.run(scenario=args.scenario, output=output)
+
+    if args.markdown:
+        print(result)
+
+
+def cmd_install(args):
+    from installer import ClientInstaller
+
+    if args.list:
+        print("Available install targets:")
+        for target in sorted(ClientInstaller.TARGETS):
+            print(f" - {target}")
+        return
+
+    target = (args.target or "").strip().lower()
+    if not target:
+        print("Usage: synapse install --list | synapse install <target> [--db PATH]")
+        print("Example: synapse install claude --db ./synapse_store")
+        raise SystemExit(1)
+
+    installer = ClientInstaller.TARGETS.get(target)
+    if installer is None:
+        print(f"Unknown install target: {target}")
+        print(f"Available targets: {', '.join(sorted(ClientInstaller.TARGETS))}")
+        raise SystemExit(1)
+
+    installer(args.db or APPLIANCE_DB_DEFAULT)
+
+
 # ─── Federation commands (standalone) ────────────────────────────────────────
 
 def cmd_serve_federation(args):
@@ -1638,6 +2062,19 @@ def main():
     p.add_argument('--sort', default='recent', choices=['recent', 'created', 'access_count'])
 
     p = subparsers.add_parser('count', help='Count total memories')
+    p = subparsers.add_parser('policy', help='Manage memory policy presets')
+    p.set_defaults(policy_action='show')
+    p_policy = p.add_subparsers(dest='policy_action', help='Policy actions')
+
+    p_set = p_policy.add_parser('set', help='Set active policy preset')
+    p_set.add_argument('preset', choices=['minimal', 'private', 'work', 'ephemeral'])
+    p_set.set_defaults(policy_action='set')
+
+    p_list = p_policy.add_parser('list', help='List available policy presets')
+    p_list.set_defaults(policy_action='list')
+
+    p_show = p_policy.add_parser('show', help='Show active policy')
+    p_show.set_defaults(policy_action='show')
 
     p = subparsers.add_parser('browse', help='Browse memories by concept')
     p.add_argument('--concept', required=True, help='Concept to browse')
@@ -1706,6 +2143,11 @@ def main():
     p.add_argument('--threshold', type=float, default=0.7, help='Similarity threshold')
     p.add_argument('--max-age-days', type=float, default=None, help='Only consolidate memories older than N days')
 
+    p = subparsers.add_parser('sleep', help='Run sleep maintenance pipeline')
+    p.add_argument('--db', help='Synapse AI Memory database path')
+    p.add_argument('--verbose', action='store_true', help='Include verbose sleep internals')
+    p.add_argument('--digest', action='store_true', help='Emit human-readable sleep digest')
+
     # ── Portable Format commands ──
     p = subparsers.add_parser('export', help='Export database to .synapse file')
     p.add_argument('output', help='Output .synapse file path')
@@ -1717,11 +2159,17 @@ def main():
     p.add_argument('--types', help='Filter by memory types (comma-separated)')
     p.add_argument('--source', help='Source agent identifier')
 
-    p = subparsers.add_parser('import', help='Import .synapse file')
-    p.add_argument('input', help='Input .synapse file path')
+    p = subparsers.add_parser('import', help='Import memories from a file source')
+    p.add_argument('input', help='Import type (chat, notes, clipboard, jsonl, csv) or .synapse path')
+    p.add_argument('path', nargs='?', help='Source path/folder for non-clipboard imports')
+    p.add_argument('--format', choices=['auto', 'chatgpt', 'claude', 'whatsapp', 'plain'], default='auto',
+                   help='Chat transcript format (for `chat` import)')
     p.add_argument('--db', help='Target database path')
     p.add_argument('--no-dedup', action='store_true')
     p.add_argument('--threshold', type=float, default=0.85)
+    p.add_argument('--recursive', action='store_true', help='Recurse folders when importing notes')
+    p.add_argument('--text-field', default='text', help='Field name with memory text in JSONL rows')
+    p.add_argument('--text-column', default='text', help='Column with memory text in CSV rows')
 
     p = subparsers.add_parser('inspect-export', help='Inspect .synapse file')
     p.add_argument('input', help='.synapse file path')
@@ -1794,10 +2242,20 @@ def main():
     cp_delete.add_argument('name')
     cp_delete.set_defaults(checkpoint_action='delete')
 
+    p = subparsers.add_parser('demo', help='Run built-in demo scenarios')
+    p.add_argument('--scenario', default='diet', choices=['diet', 'travel', 'project', 'all'],
+                   help='Demo scenario to run')
+    p.add_argument('--markdown', action='store_true',
+                   help='Emit markdown output for sharing')
+
     # ── Appliance commands ──
     p = subparsers.add_parser('inspect', help='Inspect MCP tool catalog and store')
     p.add_argument('--db', default=APPLIANCE_DB_DEFAULT, help='MCP storage path')
     p.add_argument('--json', action='store_true', help='Output JSON summary')
+
+    p = subparsers.add_parser('inspector', help='Launch local inspector UI')
+    p.add_argument('--port', type=int, default=9471, help='Local inspector port')
+    p.add_argument('--db', help='Synapse database path')
 
     p = subparsers.add_parser('doctor', help='Run MCP appliance health checks')
     p.add_argument('--db', default=APPLIANCE_DB_DEFAULT, help='MCP storage path')
@@ -1806,6 +2264,17 @@ def main():
     p.add_argument('--db', default=APPLIANCE_DB_DEFAULT, help='Storage path')
     p.add_argument('--port', type=int, default=8765, help='HTTP JSON-RPC port (requires --http)')
     p.add_argument('--http', action='store_true', help='Run as HTTP server on localhost')
+
+    p = subparsers.add_parser('up', help='Start Synapse appliance daemon')
+    p.add_argument('--db', default=APPLIANCE_DB_DEFAULT, help='Storage path')
+    p.add_argument('--port', type=int, default=APPLIANCE_DAEMON_PORT, help='Service port')
+    p.add_argument('--mode', choices=['appliance', 'full'], default='appliance', help='Daemon startup mode')
+
+    p = subparsers.add_parser('down', help='Stop Synapse appliance daemon')
+
+    p = subparsers.add_parser('status', help='Show Synapse appliance daemon status')
+    p.add_argument('--db', default=APPLIANCE_DB_DEFAULT, help='Storage path')
+    p.add_argument('--port', type=int, default=APPLIANCE_DAEMON_PORT, help='Service port')
 
     # ── Federation commands ──
     p = subparsers.add_parser('serve-federation', help='Start federation server')
@@ -1835,6 +2304,11 @@ def main():
     p = subparsers.add_parser('peers', help='Show peer info')
     p.add_argument('peer', help='Peer URL to query')
 
+    p = subparsers.add_parser('install', help='Install Synapse client integrations')
+    p.add_argument('target', nargs='?', help='Install target (claude, openclaw, nanoclaw)')
+    p.add_argument('--db', default=APPLIANCE_DB_DEFAULT, help='Synapse database path')
+    p.add_argument('--list', action='store_true', help='Show available install targets')
+
     args = parser.parse_args()
 
     if not args.command:
@@ -1850,15 +2324,21 @@ def main():
         'beliefs': cmd_beliefs,
         'timeline': cmd_timeline,
         'consolidate': cmd_consolidate,
+        'sleep': cmd_sleep,
         'export': cmd_export,
         'import': cmd_import,
         'inspect': cmd_inspect,
+        'inspector': cmd_inspector,
         'inspect-export': cmd_inspect_export,
         'checkpoint': cmd_checkpoint,
         'merge': cmd_merge,
         'diff': cmd_diff,
         'pack': cmd_pack,
+        'install': cmd_install,
         'doctor': cmd_doctor,
+        'up': cmd_up,
+        'down': cmd_down,
+        'status': cmd_status,
         'serve': cmd_serve,
         'serve-federation': cmd_serve_federation,
         'card': cmd_card,
@@ -1866,6 +2346,7 @@ def main():
         'pull': cmd_pull_fed,
         'sync': cmd_sync_fed,
         'peers': cmd_peers_fed,
+        'demo': cmd_demo,
     }
 
     if args.command in standalone:
@@ -1899,6 +2380,7 @@ def main():
         'list': cmd_list,
         'count': cmd_count,
         'browse': cmd_browse,
+        'policy': cmd_policy,
     }
 
     try:

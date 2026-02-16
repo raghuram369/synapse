@@ -22,6 +22,76 @@ class SleepReport:
     duration_ms: float
     details: Dict[str, Any] = field(default_factory=dict)
 
+    def to_digest(self) -> str:
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        lines: List[str] = []
+        lines.append(f"Sleep Digest — {now}")
+        lines.append(
+            "Summary: "
+            f"consolidated={self.consolidated}, promoted={self.promoted}, "
+            f"patterns={self.patterns_found}, contradictions={self.contradictions}, "
+            f"pruned={self.pruned}, graph_cleaned={self.graph_cleaned}, "
+            f"duration_ms={self.duration_ms:.2f}"
+        )
+        lines.append("")
+
+        promoted_facts = self.details.get("promoted_facts", [])
+        if self.promoted > 0 and promoted_facts:
+            lines.append("Promoted Facts")
+            for fact in promoted_facts:
+                lines.append(f"- {fact}")
+            lines.append("")
+
+        lines.append("Patterns Discovered")
+        patterns = self.details.get("patterns", {}).get("examples", [])
+        if patterns:
+            for item in patterns:
+                lines.append(f"- {item}")
+        else:
+            lines.append("- none")
+        lines.append("")
+
+        lines.append("Contradictions Found")
+        contradictions = self.details.get("contradictions", {}).get("examples", [])
+        if contradictions:
+            for item in contradictions:
+                lines.append(f"- {item}")
+        else:
+            lines.append("- none")
+        lines.append("")
+
+        lines.append("Cleanup Stats")
+        merged = self.details.get("consolidation", {}).get("memos_merged", self.consolidated)
+        orphans = self.details.get("graph_cleanup", {}).get("items", self.graph_cleaned)
+        lines.append(f"- merged: {merged}")
+        lines.append(f"- pruned: {self.pruned}")
+        lines.append(f"- orphans: {orphans}")
+        lines.append("")
+
+        lines.append("Hot Topics")
+        hot_topics = self.details.get("hot_topics", [])
+        if hot_topics:
+            for topic in hot_topics:
+                lines.append(f"- {topic}")
+        else:
+            lines.append("- none")
+        lines.append("")
+
+        lines.append("Suggestions")
+        suggestions: List[str] = []
+        if self.contradictions > 0:
+            suggestions.append("Review and resolve contradiction pairs.")
+        if self.pruned > 0:
+            suggestions.append("Pin critical memories before next retention cycle.")
+        if self.patterns_found == 0:
+            suggestions.append("Capture more repeated behaviors to improve pattern mining.")
+        if not suggestions:
+            suggestions.append("No immediate cleanup actions required.")
+        for item in suggestions:
+            lines.append(f"- {item}")
+
+        return "\n".join(lines)
+
 
 class SleepRunner:
     def __init__(self, synapse_instance):
@@ -39,6 +109,7 @@ class SleepRunner:
         self.streak_min_episodes = 3
 
         self._max_links_per_provenance = 8
+        self._last_promoted_topics: List[str] = []
 
     @property
     def memory_threshold(self) -> int:
@@ -186,6 +257,7 @@ class SleepRunner:
     def _promote_to_semantic(self) -> int:
         """Promote frequently recalled episodic memories into semantic memories."""
         topic_stats: Dict[str, Dict[str, Any]] = {}
+        promoted_topics: List[str] = []
 
         for memory in self._active_memories():
             memory_type = memory.memory_type
@@ -252,6 +324,7 @@ class SleepRunner:
                 metadata=payload,
             )
             created += 1
+            promoted_topics.append(topic)
             for source_memory_id in source_memories[:self._max_links_per_provenance]:
                 self.synapse._link_memory_to_pattern(
                     source_memory_id,
@@ -260,6 +333,7 @@ class SleepRunner:
                     weight=0.2,
                 )
 
+        self._last_promoted_topics = sorted(set(promoted_topics))
         return created
 
     def _mine_patterns(self) -> int:
@@ -518,10 +592,22 @@ class SleepRunner:
             details['semantic'] = {
                 'promoted': promoted,
             }
+            details['promoted_facts'] = [f"User typically does {topic}" for topic in self._last_promoted_topics]
 
             patterns_found = self._mine_patterns()
+            pattern_examples: List[str] = []
+            for memory_data in self.synapse.store.memories.values():
+                if memory_data.get("memory_type") != "semantic" or memory_data.get("consolidated", False):
+                    continue
+                meta = self._load_metadata(memory_data)
+                if not meta.get("pattern_type"):
+                    continue
+                pattern_examples.append(memory_data.get("content", ""))
+                if len(pattern_examples) >= 5:
+                    break
             details['patterns'] = {
                 'found': patterns_found,
+                'examples': pattern_examples,
             }
 
             contradiction_results = self.synapse.contradiction_detector.scan_memories(
@@ -529,6 +615,10 @@ class SleepRunner:
             )
             details['contradictions'] = {
                 'count': len(contradiction_results),
+                'examples': [
+                    getattr(item, "description", "") for item in contradiction_results[:5]
+                    if getattr(item, "description", "")
+                ],
             }
 
             pruned_ids = self.synapse.prune(
@@ -545,6 +635,9 @@ class SleepRunner:
             details['graph_cleanup'] = {
                 'items': graph_cleaned,
             }
+            details['hot_topics'] = [
+                f"{name} ({score:.3f})" for name, score in self.synapse.hot_concepts(k=5)
+            ]
 
             self.synapse._last_sleep_at = time.time()
             return SleepReport(
