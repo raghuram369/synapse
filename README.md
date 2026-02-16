@@ -2,13 +2,106 @@
 
 **Your AI's memory. Private. Portable. Federated.**
 
-![Demo](demo.gif)
-
 ```bash
 pip install synapse-ai-memory
 ```
 
 ![Version](https://img.shields.io/badge/version-0.8.0-blue) ![Tests](https://img.shields.io/badge/tests-305%20passing-brightgreen) ![Cloud Calls](https://img.shields.io/badge/cloud%20calls-0-green) ![Speed](https://img.shields.io/badge/recall-fast-lightgrey)
+
+---
+
+## Install → Configure → Remember (30 seconds)
+
+![Install Demo](assets/install.gif)
+
+```bash
+pip install synapse-ai-memory
+synapse install claude          # auto-configures Claude Desktop
+```
+
+```python
+from synapse import Synapse
+s = Synapse()
+s.remember("I prefer dark mode")
+s.recall("what theme?")         # → "I prefer dark mode" (6ms)
+```
+
+That's it. Your AI now has persistent memory. No API keys. No cloud. No config files.
+
+---
+
+## Import Your Existing Data
+
+![Import Demo](assets/import-policy.gif)
+
+```bash
+synapse import chat ~/Downloads/chatgpt_export.json    # ChatGPT
+synapse import chat ~/Downloads/claude_export.json      # Claude
+synapse import notes ~/obsidian-vault/                  # Markdown notes
+synapse import clipboard                                # Clipboard
+```
+
+Bring your history. Every conversation, note, and snippet — indexed and searchable in seconds.
+
+---
+
+## Privacy Presets (One Command)
+
+```bash
+synapse policy apply private    # PII redaction + 90-day TTL + encrypted exports
+synapse policy apply minimal    # Keep tagged memories, prune everything else
+synapse policy apply ephemeral  # Auto-delete after session ends
+synapse policy apply work       # Team-friendly retention rules
+```
+
+No YAML files. No config pages. Pick a preset and go.
+
+---
+
+## Sleep Digest — Your Memory's Daily Report
+
+![Sleep Digest](assets/sleep-digest.gif)
+
+```bash
+synapse sleep --digest
+```
+
+Sleep runs a full maintenance cycle and gives you a human-readable report: what got promoted, patterns discovered, contradictions found, hot topics, cleanup stats, and actionable suggestions.
+
+---
+
+## Chat-Native Memory (`/mem`)
+
+![Mem Commands](assets/mem-commands.gif)
+
+Drop memory into any chat runtime with a tiny command surface:
+
+```
+/mem remember I'm working on Project Atlas
+/mem recall what project?
+/mem contradict
+/mem timeline
+/mem sleep
+/mem forget sensitive-topic
+/mem stats
+```
+
+Works in Telegram, Discord, OpenClaw, NanoClaw, and any chat-native agent shell.
+
+---
+
+## MCP Memory Appliance
+
+![MCP Appliance](assets/mcp-appliance.gif)
+
+```bash
+synapse serve --db ~/.synapse/store              # stdio MCP server
+synapse serve --http --port 8765                  # HTTP JSON-RPC (localhost)
+synapse doctor --db ~/.synapse/store              # health check
+synapse inspect --db ~/.synapse/store --json      # tool catalog + stats
+```
+
+8 tools that make any agent 2x smarter: `remember`, `compile_context`, `timeline`, `what_changed`, `contradictions`, `fact_history`, `sleep`, `stats`.
 
 ---
 
@@ -40,6 +133,7 @@ prompt_injection = pack.to_system_prompt()
 
 # 5) Sleep mode (maintenance cycle)
 report = s.sleep(verbose=True)  # consolidate, promote, mine patterns, prune, refresh communities
+print(report.to_digest())       # human-readable summary
 ```
 
 No API keys. No cloud. No setup. Just `pip install` and go.
@@ -50,19 +144,21 @@ No API keys. No cloud. No setup. Just `pip install` and go.
 
 - 🧠 **Multi-index retrieval** — BM25 + concept graph + temporal + episodes + activation spreading, fused into one recall
 - 🕸️ **Structured knowledge graph** — zero-LLM triple extraction (SPO + polarity/tense/confidence) indexed per memory
-- 🔍 **Dual-path GraphRAG** — combine BM25 with multi-hop activation spreading for multi-hop retrieval (`retrieval_mode="graph"`)
+- 🔍 **Dual-path GraphRAG** — combine BM25 with multi-hop activation spreading for multi-hop retrieval
 - ✅ **Truth maintenance** — contradiction detection + belief versioning with provenance and evidence chains
 - ⏳ **Bitemporal memory** — store `observed_at`, `valid_from`, `valid_to` and query with `as_of`, `during`, `latest`
 - 💤 **Sleep maintenance** — consolidation, promotion, pattern mining, pruning, graph cleanup, community refresh
-- 📦 **Portable `.synapse` files** — export, import, merge, diff — your memory is a file you own. Runtime storage uses `.log` + `.snapshot` files; portable export uses the `.synapse` binary format.
+- 📦 **Portable `.synapse` files** — export, import, merge, diff — your memory is a file you own
 - 🌐 **Federation** — P2P agent memory sync via Merkle trees and vector clocks
-- ✂️ **Forgetting + privacy tools** — TTL, topic-forget, redaction, GDPR delete
-- 🔒 **Privacy-first** — zero cloud calls, zero telemetry. Your data never leaves your machine (optional local Ollama calls use localhost HTTP).
-- 🧰 **MCP memory appliance** — run as an MCP server and inspect health/tools with `serve`, `doctor`, `inspect`
-- 🧠 **Brain packs + checkpoints** — share topic packs (`.brain`) and checkpoint/restore memory state like Git for your agent's brain
-- 🗂️ **ContextPack cards** — deterministic, replayable context snapshots with markdown + JSON/binary formats and deck export
-- 🤖 **Chat-native command DSL** — `/mem` commands for Telegram, Discord, OpenClaw, NanoClaw, and other chat runtimes
-- 🔐 **Trust UX defaults** — localhost-first networking, explicit permission manifest, no setup scripts, auditable source
+- ✂️ **Forgetting + privacy** — TTL, topic-forget, redaction, GDPR delete, policy presets
+- 🔒 **Privacy-first** — zero cloud calls, zero telemetry. Your data never leaves your machine
+- 🔧 **One-line install** — `synapse install claude/openclaw` auto-configures everything
+- 📥 **Importers** — ChatGPT, Claude, WhatsApp, notes, clipboard, JSONL, CSV
+- 🎛️ **Policy presets** — minimal, private, work, ephemeral — no config needed
+- 🧰 **MCP appliance** — 8-tool surface with `serve`, `doctor`, `inspect`
+- 🧠 **Brain packs + checkpoints** — share `.brain` packs, checkpoint/restore like Git
+- 🗂️ **ContextPack cards** — deterministic, replayable context snapshots
+- 🤖 **Chat-native `/mem` DSL** — works in Telegram, Discord, OpenClaw, NanoClaw
 - ⚡ **Fast local recall** — pure Python, zero dependencies, runs on a Raspberry Pi
 
 ---
@@ -119,34 +215,6 @@ history = s.belief_history("user")   # versions matching a topic-like filter
 
 ---
 
-## Sleep & Consolidation
-
-Sleep mode runs a full maintenance cycle to keep memory healthy over time.
-
-```python
-from synapse import Synapse
-
-s = Synapse(":memory:")
-# ... add memories over time ...
-report = s.sleep(verbose=True)
-print(report)
-
-# Human-readable digest (great for daily summaries)
-print(report.to_digest())
-```
-
-```bash
-# CLI: run sleep with human-readable digest output
-synapse sleep --digest --db ~/.synapse/synapse_store
-
-# Verbose internals
-synapse sleep --verbose --db ~/.synapse/synapse_store
-```
-
-Sleep includes: consolidation, promotion (episodic → semantic), pattern mining, pruning, contradiction scanning, graph cleanup, community refresh, and hot topic tracking. The digest output includes promoted facts, discovered patterns, contradictions, cleanup stats, hot topics, and actionable suggestions.
-
----
-
 ## Context Compiler (ContextPack)
 
 `compile_context()` compiles recalled memories, a graph slice, summaries, and evidence chains into a compact `ContextPack` for LLM integration.
@@ -187,70 +255,6 @@ s.set_retention_rules([{"tag": "temporary", "ttl_days": 7, "action": "delete"}])
 
 ---
 
-## Debug & Inspect (CLI)
-
-The debug CLI is designed for answering "why did I recall this?" and "what does the memory graph believe?"
-
-```bash
-synapse why 123 --db ~/.synapse/synapse
-synapse graph "vegetarian" --db ~/.synapse/synapse
-synapse conflicts --db ~/.synapse/synapse
-synapse beliefs --db ~/.synapse/synapse
-synapse timeline --db ~/.synapse/synapse
-synapse stats --db ~/.synapse/synapse
-```
-
----
-
-## Consumer Utilities (v0.8.0)
-
-v0.8.0 adds everything you need to go from `pip install` to running in production:
-
-- **One-line install:** `synapse install claude` / `synapse install openclaw` — auto-configures MCP for Claude Desktop or OpenClaw
-- **Daemon lifecycle:** `synapse up` / `synapse down` / `synapse status` — run as background service
-- **Policy presets:** `minimal`, `private`, `work`, `ephemeral` — pre-tuned retention/privacy rules, no config needed
-- **Importers:** `synapse import chat export.json` / `synapse import notes ~/notes/` / `synapse import clipboard` — bring your existing data
-- **Inspector:** `synapse inspect --web` — local web dashboard for browsing memories, graph, and stats
-- **Demo runner:** `synapse demo --scenario getting-started` — interactive walkthrough scenarios
-- **Sleep digest:** `synapse sleep --digest` — human-readable maintenance report with promoted facts, patterns, contradictions, hot topics, and suggestions
-- **Integration snippets:** 5-line drop-in patterns for every supported framework
-
----
-
-## MCP Memory Appliance
-
-Synapse can run as an MCP memory appliance with a compact tool surface and built-in operability commands.
-
-```bash
-# 1) Run appliance as MCP server (stdio mode)
-synapse serve --db ~/.synapse/synapse_store
-
-# 2) Run appliance over HTTP JSON-RPC (localhost only)
-synapse serve --http --port 8765 --db ~/.synapse/synapse_store
-
-# 3) Health checks: storage, permissions, exports, performance
-synapse doctor --db ~/.synapse/synapse_store
-
-# 4) Inspect tool catalog + store stats
-synapse inspect --db ~/.synapse/synapse_store
-synapse inspect --db ~/.synapse/synapse_store --json
-```
-
-### Streamlined 8-Tool MCP Surface (appliance mode)
-
-These 8 tools make any agent look 2x smarter:
-
-- `remember` — store memory with normalization + contradiction-aware indexing
-- `compile_context` — build an LLM-ready context pack with summaries/evidence
-- `timeline` — fetch chronological memory timeline in a time window
-- `what_changed` — summarize new facts, belief shifts, and resolved conflicts
-- `contradictions` — list unresolved contradictions
-- `fact_history` — show how a fact evolved over time
-- `sleep` — run maintenance (consolidation/pruning controls)
-- `stats` — expose store health and drift indicators
-
----
-
 ## Brain Packs (`synapse pack`)
 
 Brain packs are the share object for Synapse: "Here is my project brain pack."
@@ -287,27 +291,6 @@ synapse checkpoint restore before-refactor --confirm --db ~/.synapse/synapse_sto
 
 ---
 
-## Chat Command DSL (`/mem`)
-
-Chat runtimes can expose Synapse through a tiny command surface:
-
-- `/mem remember <text>`
-- `/mem recall <query>`
-- `/mem pack <query> [budget]`
-- `/mem rewind <range> [topic]`
-- `/mem contradict`
-- `/mem history <subject>`
-- `/mem timeline [query]`
-- `/mem sleep`
-- `/mem stats`
-- `/mem forget <topic>`
-- `/mem search <query>`
-- `/mem export [path]`
-
-Works for Telegram, Discord, OpenClaw, NanoClaw, and other chat-native agent shells.
-
----
-
 ## ContextPack Cards
 
 ContextPack cards are deterministic, replayable context snapshots for sharing memory bundles across sessions.
@@ -328,18 +311,21 @@ synapse card show card-abc123 --db ~/.synapse/synapse_store
 
 ---
 
-## Trust UX
+## Debug & Inspect (CLI)
 
-Synapse is designed for auditable local memory operations:
+```bash
+synapse why 123 --db ~/.synapse/synapse      # why did I recall this?
+synapse graph "vegetarian" --db ~/.synapse     # explore concept graph
+synapse conflicts --db ~/.synapse              # list contradictions
+synapse beliefs --db ~/.synapse                # current belief state
+synapse timeline --db ~/.synapse               # chronological view
+synapse stats --db ~/.synapse                  # store health
+synapse inspect --web --db ~/.synapse          # local web dashboard
+```
 
-- Permission manifest concept: explicit tool surface and expected write/read behavior
-- Localhost-only default for appliance/federation networking unless explicitly opted in
-- No setup scripts, no hidden installers
-- No cloud calls, no telemetry, auditable source
+---
 
 ## Benchmarks
-
-The `bench/` suite measures retrieval quality (Recall@K, MRR) and reports end-to-end benchmark runtime; it does not claim or measure per-query latency.
 
 ```
 LOCOMO Benchmark (industry standard)
@@ -361,17 +347,13 @@ Pure Python. No embeddings API. No GPU. These numbers come from indexes alone.
 ## Works With Everything
 
 ### MCP Tool Mode
-`examples/snippets/mcp_tool_mode.py`
 ```python
-'''MCP Tool Mode: Claude Desktop / any MCP client'''
-# 1. Install: pip install synapse-ai-memory
-# 2. Configure: synapse install claude
-# 3. Restart Claude Desktop
-# That's it. Claude now has persistent memory.
+# 1. pip install synapse-ai-memory
+# 2. synapse install claude
+# 3. Restart Claude Desktop — done.
 ```
 
 ### Library Mode
-`examples/snippets/library_mode.py`
 ```python
 from synapse import Synapse
 s = Synapse('my-agent')
@@ -381,36 +363,28 @@ context = s.compile_context('user preferences', budget=2000)
 ```
 
 ### Daemon Mode
-`examples/snippets/daemon_mode.py`
-```python
-# Terminal 1: start Synapse
-# $ synapse up --port 9470
-# Terminal 2: any HTTP client
-import requests
-r = requests.post('http://localhost:9470/tool', json={'tool': 'remember', 'args': {'content': 'User likes jazz'}})
+```bash
+synapse up --port 9470
+# Any HTTP client:
+curl -X POST localhost:9470/tool -d '{"tool":"remember","args":{"content":"User likes jazz"}}'
 ```
 
 ### Chat Mode
-`examples/snippets/chat_mode.py`
 ```python
 from synapse import Synapse
 s = Synapse('chat-bot')
-# In your message handler:
 if s.command_parser.is_memory_command(user_message):
-    response = s.command(user_message)  # handles /mem remember, /mem recall, etc.
+    response = s.command(user_message)  # /mem remember, /mem recall, etc.
 ```
 
 ### Framework Mode
-`examples/snippets/framework_mode.py`
 ```python
 from synapse import Synapse
 from integrations.langchain import SynapseMemory
 memory = SynapseMemory(synapse=Synapse('langchain-agent'))
-# Drop into any LangChain chain as memory=memory
-chain.memory = memory
+chain.memory = memory  # drop into any LangChain chain
 ```
 
-Tool-use mode also supported via MCP and integrations.
 See [`integrations/`](integrations/) for LangChain / LangGraph / CrewAI / Claude / OpenAI examples.
 
 ---
