@@ -4,15 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "synapse-ai-memory"
-version = "0.10.0"
-description = "A neuroscience-inspired memory database for AI agents with portable format and federation. Zero dependencies. Pure Python."
+version = "0.11.0"
+description = "A neuroscience-inspired memory engine for AI agents featuring private vaults, smart inbox review, and natural-language forgetting. Portable, federated, and zero-dependency."
 authors = [{name = "Raghuram Parvataneni"}]
 readme = "README.md"
 license = {text = "MIT"}
-keywords = ["ai", "memory", "database", "agents", "neuroscience", "bm25", "embeddings"]
+keywords = ["ai", "memory", "database", "agents", "neuroscience", "bm25", "embeddings", "vaults", "inbox", "forgetting", "privacy"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -21,6 +22,8 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Database",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Security",
+    "Topic :: Communications",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 requires-python = ">=3.10"

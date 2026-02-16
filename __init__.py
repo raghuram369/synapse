@@ -19,7 +19,7 @@ from exceptions import (
     SynapseValidationError,
 )
 
-__version__ = "0.6.0"
+__version__ = "0.11.0"
 __all__ = [
     "Memory",
     "Synapse",

@@ -6,7 +6,7 @@
 pip install synapse-ai-memory
 ```
 
-![Version](https://img.shields.io/badge/version-0.10.0-blue) ![Tests](https://img.shields.io/badge/tests-758%20passing-brightgreen) ![Cloud Calls](https://img.shields.io/badge/cloud%20calls-0-green) ![Speed](https://img.shields.io/badge/recall-fast-lightgrey)
+![Version](https://img.shields.io/badge/version-0.11.0-blue) ![Tests](https://img.shields.io/badge/tests-814%20passing-brightgreen) ![Cloud Calls](https://img.shields.io/badge/cloud%20calls-0-green) ![Speed](https://img.shields.io/badge/recall-fast-lightgrey)
 
 ---
 
@@ -27,6 +27,22 @@ s.recall("what theme?")         # → "I prefer dark mode" (6ms)
 ```
 
 That's it. Your AI now has persistent memory. No API keys. No cloud. No config files.
+
+---
+
+## What's New in 0.11.0
+
+### 3 new capabilities to make memory safer and easier to manage
+
+- 🏛️ **Vaults for per-user isolation** — keep separate memory spaces for teams, family members, or apps while using one Synapse install.
+- 📥 **Smart Memory Inbox** — AI-assisted review queues flag uncertain or sensitive memories so you approve important context before it becomes permanent.
+- 🗣️ **Natural Language Forget** — delete what you don’t want back with plain-English commands like `"forget everything about my old job"` or `"forget memories older than 30 days"`.
+
+### Quick release tour
+
+- Add tenant-friendly memory boundaries with `synapse vault` and `user_id`-aware recall.
+- Use inbox workflows (`approve`, `reject`, `redact`, `pin`) to keep your memory clean without slowing down.
+- Run safe data hygiene in seconds with natural-language `nlforget` preview mode before destructive changes.
 
 ---
 
@@ -60,17 +76,19 @@ No YAML files. No config pages. Pick a preset and go.
 
 ## 🏛️ Per-User Vaults (Multi-Tenant Isolation)
 
+Give each person or app their own private memory lane.
+
 ```python
 from synapse import create_synapse_with_vaults
 
-# Create a vault-enabled Synapse instance
+# Create a vault-aware Synapse instance
 s = create_synapse_with_vaults("./synapse_vaults")
 
-# Memories are automatically isolated by user
+# Memories stay separated by user
 s.remember("I prefer coffee", user_id="alice")
 s.remember("I prefer tea", user_id="bob")
 
-# Each user sees only their own memories
+# Each user sees only their own context
 alice_memories = s.recall("prefer", user_id="alice")  # → "coffee"
 bob_memories = s.recall("prefer", user_id="bob")      # → "tea"
 ```
@@ -79,10 +97,10 @@ bob_memories = s.recall("prefer", user_id="bob")      # → "tea"
 ```bash
 synapse vault list                    # show all vaults
 synapse vault create user_alice --user-id alice
-synapse vault switch user_alice       # switch active vault
+synapse vault switch user_alice       # switch active vault for your session
 ```
 
-Perfect for multi-tenant apps, family shared agents, or team workspaces. Complete memory isolation with zero configuration.
+Perfect for multi-tenant agents, family assistants, and team environments. Strong isolation, zero config, and no shared-memory leakage.
 
 ---
 
@@ -150,35 +168,37 @@ Everything you clip is indexed, searchable, and tagged. The clipboard watcher ru
 
 ## 📥 Smart Memory Inbox (Enhanced Review)
 
+Review new memories before they become permanent.
+
 ![Memory Inbox](assets/memory-inbox.gif)
 
 ```python
-# Enable inbox mode with auto-approve rules
+# Enable inbox mode with smart defaults
 s = Synapse(inbox_mode=True)
 
-s.remember("I prefer coffee")          # → auto-approved (preference)
+s.remember("I prefer coffee")          # → auto-approved (clear preference)
 s.remember("Maybe I should exercise")  # → pending (uncertain language)
 s.remember("I want to learn Python")  # → auto-approved (goal)
 ```
 
 **Advanced Inbox Management:**
 ```bash
-synapse inbox list                   # show pending memories
-synapse inbox approve item_12345     # approve one item  
-synapse inbox reject item_12345      # reject and delete
+synapse inbox list                      # show pending memories
+synapse inbox approve item_12345        # approve one item
+synapse inbox reject item_12345        # reject and delete
 synapse inbox redact item_12345 "I prefer [REDACTED]"  # redact and approve
-synapse inbox pin item_12345         # pin as high importance
-synapse inbox query "exercise"       # search pending items
+synapse inbox pin item_12345          # pin as high-importance
+synapse inbox query "exercise"        # search pending items
 ```
 
 **Auto-Approve Rules:**
 - ✅ Preferences (`"I like"`, `"I prefer"`, `"I hate"`)
-- ✅ Goals (`"I want to"`, `"My goal is"`, `"I plan to"`) 
-- ✅ Clear facts (no uncertainty words like `"maybe"`, `"might"`)
-- ❌ Personal info (phone numbers, SSNs) — always requires review
-- ❌ Uncertain content (`"I'm not sure"`, `"possibly"`)
+- ✅ Goals (`"I want to"`, `"My goal is"`, `"I plan to"`)
+- ✅ Clear, non-uncertain facts
+- ❌ Personal info (phone numbers, SSNs) — always sends to review
+- ❌ Uncertain or vague content (`"maybe"`, `"possibly"`, `"I'm not sure"`)
 
-The inspector dashboard shows pending items with approve/reject/redact/pin actions. Smart enough to auto-approve obvious content, cautious enough to flag sensitive or uncertain information.
+The inspector dashboard keeps control with approve/reject/redact/pin actions. It auto-accepts high-confidence memories while surfacing sensitive or ambiguous ones for your confirmation.
 
 ---
 
@@ -239,6 +259,8 @@ Even after scope filtering + sensitive blocking, outgoing data gets scrubbed for
 
 ## 🗣️ Natural Language Forget
 
+Ask Synapse to clean up using plain English.
+
 ```bash
 # Simple fact deletion
 synapse nlforget "forget my phone number"
@@ -272,7 +294,7 @@ result = s.natural_forget("forget old stuff", dry_run=True)
 print(result["memories"])  # → preview of what would be deleted
 ```
 
-Uses existing BM25/search to find matching memories, then confirms before deletion. Pure pattern matching — no external APIs, no LLM calls, works offline.
+This feature uses existing BM25/search indexing to find matches, then confirms before deletion. Pure pattern matching with no external APIs or LLM calls—so forget runs fast, private, and offline.
 
 ---
 
@@ -366,6 +388,9 @@ No API keys. No cloud. No setup. Just `pip install` and go.
 - 🧰 **MCP appliance** — 8-tool surface with `serve`, `doctor`, `inspect`
 - 🧠 **Brain packs + checkpoints** — share `.brain` packs, checkpoint/restore like Git
 - 🗂️ **ContextPack cards** — deterministic, replayable context snapshots
+- 🏛️ **Per-user vaults** — isolate memory for each person or app with clean tenant boundaries
+- 📥 **Smart Memory Inbox** — human-in-the-loop approvals for uncertain/sensitive memories
+- 🗣️ **Natural Language Forget** — delete memories with plain-English commands
 - 🤖 **Chat-native `/mem` DSL** — works in Telegram, Discord, OpenClaw, NanoClaw
 - ⚡ **Fast local recall** — pure Python, zero dependencies, runs on a Raspberry Pi
 
@@ -677,7 +702,10 @@ Multiple indexes. One fused result. No LLM in the loop.
 ## Quick Links
 
 - 📦 PyPI: `synapse-ai-memory`
-- 🧪 Tests: `tests/` (758 tests)
+- 🧪 Tests: `tests/` (814 tests)
+- 🧠 Vaults: `Per-User Vaults (Multi-Tenant Isolation)`
+- 📥 Smart Inbox: `Smart Memory Inbox (Enhanced Review)`
+- 🗣️ Forget: `Natural Language Forget`
 - 🔌 Integrations: `integrations/`
 - 🧰 Examples: `examples/`
 - 📈 Benchmarks: `bench/`
