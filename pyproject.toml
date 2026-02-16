@@ -55,17 +55,31 @@ Documentation = "https://github.com/raghuram369/synapse#readme"
 
 [tool.setuptools]
 py-modules = [
-    "synapse", 
-    "cli", 
-    "synapsed", 
-    "storage", 
-    "indexes", 
-    "entity_graph", 
-    "episode_graph", 
-    "embeddings", 
-    "extractor", 
+    "synapse",
+    "cli",
+    "synapsed",
+    "storage",
+    "indexes",
+    "entity_graph",
+    "episode_graph",
+    "embeddings",
+    "extractor",
     "client",
     "portable",
+    "triples",
+    "contradictions",
+    "belief",
+    "sleep",
+    "temporal",
+    "graph_retrieval",
+    "context_pack",
+    "communities",
+    "forgetting",
+    "evidence",
+    "normalization",
+    "debug",
+    "exceptions",
+    "mcp_server",
 ]
 packages = [
     "federation",
@@ -75,6 +89,7 @@ packages = [
     "integrations.crewai",
     "integrations.claude",
     "integrations.openai",
+    "synapse.compat",
 ]
 
 [tool.black]

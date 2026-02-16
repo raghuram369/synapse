@@ -8,7 +8,7 @@
 pip install synapse-ai-memory
 ```
 
-![Version](https://img.shields.io/badge/version-0.6.0-blue) ![Tests](https://img.shields.io/badge/tests-167%20passing-brightgreen) ![API Calls](https://img.shields.io/badge/API%20calls-0-green) ![Speed](https://img.shields.io/badge/recall-%3C1ms-lightgrey)
+![Version](https://img.shields.io/badge/version-0.6.0-blue) ![Tests](https://img.shields.io/badge/tests-167%20passing-brightgreen) ![Cloud Calls](https://img.shields.io/badge/cloud%20calls-0-green) ![Speed](https://img.shields.io/badge/recall-fast-lightgrey)
 
 ---
 
@@ -54,11 +54,11 @@ No API keys. No cloud. No setup. Just `pip install` and go.
 - ✅ **Truth maintenance** — contradiction detection + belief versioning with provenance and evidence chains
 - ⏳ **Bitemporal memory** — store `observed_at`, `valid_from`, `valid_to` and query with `as_of`, `during`, `latest`
 - 💤 **Sleep maintenance** — consolidation, promotion, pattern mining, pruning, graph cleanup, community refresh
-- 📦 **Portable `.synapse` files** — export, import, merge, diff — your memory is a file you own
+- 📦 **Portable `.synapse` files** — export, import, merge, diff — your memory is a file you own. Runtime storage uses `.log` + `.snapshot` files; portable export uses the `.synapse` binary format.
 - 🌐 **Federation** — P2P agent memory sync via Merkle trees and vector clocks
 - ✂️ **Forgetting + privacy tools** — TTL, topic-forget, redaction, GDPR delete
-- 🔒 **Privacy-first** — zero API calls, zero cloud, zero telemetry. Your data never leaves your machine
-- ⚡ **Sub-millisecond recall** — pure Python, zero dependencies, runs on a Raspberry Pi
+- 🔒 **Privacy-first** — zero cloud calls, zero telemetry. Your data never leaves your machine (optional local Ollama calls use localhost HTTP).
+- ⚡ **Fast local recall** — pure Python, zero dependencies, runs on a Raspberry Pi
 
 ---
 
@@ -185,6 +185,8 @@ synapse stats --db ~/.synapse/synapse
 ```
 
 ## Benchmarks
+
+The `bench/` suite measures retrieval quality (Recall@K, MRR) and reports end-to-end benchmark runtime; it does not claim or measure per-query latency.
 
 ```
 LOCOMO Benchmark (industry standard)

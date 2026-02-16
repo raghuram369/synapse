@@ -33,8 +33,8 @@ Synapse AI Memory will persist to:
 
 Key fields:
 
-- `command`: `python3`
-- `args`: absolute path to `mcp_server.py`, plus optional `--data-dir`
+- command: `python3`
+- args: absolute path to `mcp_server.py`, plus optional `--data-dir`
 
 Example:
 
