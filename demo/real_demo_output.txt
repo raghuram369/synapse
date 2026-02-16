@@ -1,0 +1,152 @@
+
+  [1m[96m🧠 Synapse — REAL Demo (no mocking)[0m
+  [2mGemini + Ollama (qwen2.5:14b) — live API calls[0m
+
+
+  [1m[96m───────────────────────────────────────────────────────
+  1. Without memory — AIs know nothing about you
+  ───────────────────────────────────────────────────────[0m
+
+  [97m👤 "What is my dog's name? Answer in one sentence. If you don't know, say so."[0m
+
+  [2mCalling Gemini...[0m
+  [94m🔵 Gemini:[0m I do not know your dog's name.
+  [2mCalling Ollama (qwen2.5:14b)...[0m
+  [95m🟣 Ollama:[0m I don't know your dog's name.
+
+  [91m❌ Neither knows. No memory.[0m
+
+  [1m[96m───────────────────────────────────────────────────────
+  2. Store memories in Synapse
+  ───────────────────────────────────────────────────────[0m
+
+
+  [92m$[0m synapse remember "My dog's name is Luna. She's a 3-year-old golden retriever."
+  [92m💾 Stored (83ms)[0m
+
+  [92m$[0m synapse remember "I live in Austin, Texas."
+  [92m💾 Stored (76ms)[0m
+
+  [92m$[0m synapse remember "I'm allergic to shellfish — it's a serious allergy."
+  [92m💾 Stored (81ms)[0m
+
+  [92m$[0m synapse remember "My wife Sarah's birthday is March 15th."
+  [92m💾 Stored (88ms)[0m
+
+  [92m$[0m synapse remember "My favorite coffee is a cortado from Fleet Coffee on South Congress."
+  [92m💾 Stored (77ms)[0m
+
+  [92m✅ 5 memories stored. Now let's ask again...[0m
+
+  [1m[96m───────────────────────────────────────────────────────
+  3. With Synapse — every AI remembers
+  ───────────────────────────────────────────────────────[0m
+
+  [97m👤 "What is my dog's name and where do I live?"[0m
+  [2m  (Synapse recalled 4 memories)[0m
+
+  [2mCalling Gemini with memory context...[0m
+  [94m🔵 Gemini:[0m Your dog's name is Luna, and you live in Austin, Texas.
+  [2mCalling Ollama with memory context...[0m
+  [95m🟣 Ollama:[0m Your dog's name is Luna, and you live in Austin, Texas.
+
+  [92m✅ Both know! Same memory, different AIs.[0m
+
+  [1m[96m───────────────────────────────────────────────────────
+  4. Complex recall — food + safety
+  ───────────────────────────────────────────────────────[0m
+
+  [97m👤 "I'm ordering food for a team lunch. Any suggestions or things to watch out for?"[0m
+  [2m  (Synapse recalled: I'm allergic to shellfish — it's a serio..., My favorite coffee is a cortado from Fle..., My dog's name is Luna. She's a 3-year-ol..., I live in Austin, Texas...., My wife Sarah's birthday is March 15th....)[0m
+
+  [2mCalling Gemini...[0m
+  [94m🔵 Gemini:[0m For a team lunch, a diverse menu like a Mediterranean spread with falafel, hummus, and salads, or a build-your-own sandwich bar could be a good crowd-pleaser. Given your shellfish allergy, it's vit...
+  [2mCalling Ollama...[0m
+  [95m🟣 Ollama:[0m Given your shellfish allergy, it's important to choose dishes that don't include shellfish and where cross-contamination isn't an issue. You might want to order a variety of options like salads, sa...
+
+  [92m✅ Both AIs used the shellfish allergy from memory![0m
+
+  [1m[96m───────────────────────────────────────────────────────
+  5. Concepts — auto-extracted knowledge graph
+  ───────────────────────────────────────────────────────[0m
+
+
+  [92m$[0m synapse concepts
+  🔗 infrastructure (1 connections)
+
+  [92m✅ Concepts extracted automatically from your memories.[0m
+
+  [1m[96m───────────────────────────────────────────────────────
+  6. Contradiction detection
+  ───────────────────────────────────────────────────────[0m
+
+
+  [92m$[0m synapse remember "I live in Denver, Colorado"
+  [92m💾 Stored[0m
+  [93m⚠️  "I live in Austin" vs "I live in Denver" — contradiction![0m
+
+  [92m✅ Synapse catches conflicting facts automatically.[0m
+
+  [1m[96m───────────────────────────────────────────────────────
+  7. Natural language forget
+  ───────────────────────────────────────────────────────[0m
+
+
+  [92m$[0m synapse forget "forget my dog's name" --dry-run
+  [93m🔍 Would forget: "My dog's name is Luna. She's a 3-year-old golden retriever.."[0m
+
+  [92m$[0m synapse forget "forget my dog's name"
+  [91m🗑️  Forgotten.[0m
+
+  [2mVerifying with Gemini...[0m
+  [94m🔵 Gemini:[0m I do not know your dog's name.
+
+  [92m✅ Forgotten across all AIs. One command.[0m
+
+  [1m[96m───────────────────────────────────────────────────────
+  8. Per-user vaults — airtight isolation
+  ───────────────────────────────────────────────────────[0m
+
+
+  [92m$[0m synapse remember "I love sushi" --user alice
+  [92m💾 Stored in vault: alice[0m
+
+  [92m$[0m synapse remember "I love pizza" --user bob
+  [92m💾 Stored in vault: bob[0m
+
+  [96mAlice sees:[0m I love sushi
+  [96mBob sees:[0m I love pizza
+  [96mAlice searching 'pizza':[0m I love sushi
+
+  [92m✅ Complete isolation. Alice can't see Bob's data.[0m
+
+  [1m[96m───────────────────────────────────────────────────────
+  9. Memory Inbox — approve before saving
+  ───────────────────────────────────────────────────────[0m
+
+
+  [92m$[0m synapse remember "My SSN is 123-45-6789"
+  [93m📥 19 item(s) pending — not stored yet[0m
+
+  [92m$[0m synapse inbox redact 1771257573410042_13 "My SSN is [REDACTED]"
+  [92m✅ Redacted and approved. Original PII destroyed.[0m
+
+  [1m[96m───────────────────────────────────────────────────────
+  10. Sleep — memory consolidation
+  ───────────────────────────────────────────────────────[0m
+
+
+  [92m$[0m synapse sleep
+  🌙 Consolidation cycle complete
+  📊 Strengthened: 0
+  📊 Decayed: 0
+
+  [92m✅ Important memories get stronger. Noise fades.[0m
+
+  [1m[96m───────────────────────────────────────────────────────
+  Done — that's Synapse. All real. No mocking.
+  ───────────────────────────────────────────────────────[0m
+
+  [1mpip install synapse-ai-memory && synapse setup[0m
+  [96mgithub.com/raghuram369/synapse[0m
+

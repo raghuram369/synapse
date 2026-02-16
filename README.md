@@ -32,9 +32,9 @@ That's it. Your AI now has persistent memory. No API keys. No cloud. No config f
 
 ## See It In Action
 
-![Cross-AI Demo](assets/cross-ai-demo.gif)
+![Real Demo](assets/real-demo.gif)
 
-> Tell Claude a fact → GPT knows it → Gemini knows it. Forget once → they all forget. One memory layer, every AI platform. Via MCP — private, local, zero cloud.
+> **Real AI responses** — Gemini + Ollama with live Synapse memory. Store facts, recall across AIs, forget in English, per-user vaults, inbox, contradiction detection. No mocking.
 
 ---
 
