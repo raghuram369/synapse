@@ -102,7 +102,7 @@ synapse --help
 def _openclaw_manifest() -> dict[str, Any]:
     return {
         "name": "synapse-ai-memory",
-        "version": "0.7.0",
+        "version": "0.8.0",
         "description": "Privacy-first AI memory engine for agents",
         "permissions": {
             "filesystem": {
@@ -188,9 +188,159 @@ def install_nanoclaw(db_path):
     _install_openclaw_into(_nanoclaw_workspace_root(), "Synapse skill installed for NanoClaw.")
 
 
+def _detect_targets(db_path: str) -> Dict[str, bool]:
+    """Return which install targets are already configured."""
+    results: Dict[str, bool] = {}
+    # Claude
+    try:
+        config_path = _claude_config_path()
+        cfg = _read_json(config_path)
+        results["claude"] = "synapse" in cfg.get("mcpServers", {})
+    except Exception:
+        results["claude"] = False
+    # OpenClaw
+    skill = os.path.join(_openclaw_workspace_root(), "synapse", "SKILL.md")
+    results["openclaw"] = os.path.exists(skill)
+    # NanoClaw
+    skill_nano = os.path.join(_nanoclaw_workspace_root(), "synapse", "SKILL.md")
+    results["nanoclaw"] = os.path.exists(skill_nano)
+    return results
+
+
+def _verify_claude() -> tuple[bool, str]:
+    """Verify Claude Desktop config has synapse in mcpServers."""
+    try:
+        config_path = _claude_config_path()
+        with open(config_path, "r", encoding="utf-8") as fp:
+            cfg = json.load(fp)
+        if "synapse" in cfg.get("mcpServers", {}):
+            return True, "synapse is configured correctly"
+        return False, "synapse not found in mcpServers"
+    except FileNotFoundError:
+        return False, "config file not found"
+    except json.JSONDecodeError:
+        return False, "config file is not valid JSON"
+
+
+def _verify_openclaw_skill(root: str) -> tuple[bool, str]:
+    """Verify OpenClaw/NanoClaw skill files exist and are readable."""
+    skill_dir = _skill_dir(root)
+    for fname in ("SKILL.md", "manifest.json"):
+        path = os.path.join(skill_dir, fname)
+        if not os.path.exists(path):
+            return False, f"missing {fname}"
+        try:
+            with open(path, "r", encoding="utf-8"):
+                pass
+        except OSError as exc:
+            return False, f"cannot read {fname}: {exc}"
+    return True, "synapse is configured correctly"
+
+
+def install_claude_enhanced(db_path: str, dry_run: bool = False, verify_only: bool = False) -> bool:
+    """Enhanced Claude install with dry-run, verify, and rollback."""
+    config_path = _claude_config_path()
+
+    if verify_only:
+        ok, detail = _verify_claude()
+        if ok:
+            print(f"✅ Verified: {detail}")
+        else:
+            print(f"❌ Verification failed: {detail}")
+        return ok
+
+    config = _read_json(config_path)
+    mcp_servers = config.setdefault("mcpServers", {})
+    if not isinstance(mcp_servers, dict):
+        mcp_servers = {}
+        config["mcpServers"] = mcp_servers
+
+    mcp_servers["synapse"] = {
+        "command": _python_binary(),
+        "args": [_mcp_server_path(), "--db", db_path],
+    }
+
+    if dry_run:
+        print(f"[dry-run] Would write to {config_path}:")
+        print(json.dumps(config, indent=2))
+        return True
+
+    backup = _backup_file(config_path)
+    try:
+        _write_json(config_path, config)
+    except Exception as exc:
+        if backup and os.path.exists(backup):
+            shutil.copy2(backup, config_path)
+            print(f"❌ Install failed, restored backup: {exc}")
+        return False
+
+    ok, detail = _verify_claude()
+    if ok:
+        print(f"✅ Verified: {detail}")
+    print("Synapse installed for Claude Desktop. Restart Claude to activate.")
+    return True
+
+
+def install_openclaw_enhanced(db_path: str, dry_run: bool = False, verify_only: bool = False) -> bool:
+    root = _openclaw_workspace_root()
+    if verify_only:
+        ok, detail = _verify_openclaw_skill(root)
+        print(f"{'✅' if ok else '❌'} {'Verified' if ok else 'Verification failed'}: {detail}")
+        return ok
+    if dry_run:
+        skill_root = _skill_dir(root)
+        print(f"[dry-run] Would create files in {skill_root}/:")
+        print("  - SKILL.md")
+        print("  - manifest.json")
+        print("  - setup.sh")
+        return True
+    _install_openclaw_into(root, "Synapse skill installed for OpenClaw.")
+    ok, detail = _verify_openclaw_skill(root)
+    if ok:
+        print(f"✅ Verified: {detail}")
+    return ok
+
+
+def install_nanoclaw_enhanced(db_path: str, dry_run: bool = False, verify_only: bool = False) -> bool:
+    root = _nanoclaw_workspace_root()
+    if verify_only:
+        ok, detail = _verify_openclaw_skill(root)
+        print(f"{'✅' if ok else '❌'} {'Verified' if ok else 'Verification failed'}: {detail}")
+        return ok
+    if dry_run:
+        skill_root = _skill_dir(root)
+        print(f"[dry-run] Would create files in {skill_root}/:")
+        print("  - SKILL.md")
+        print("  - manifest.json")
+        print("  - setup.sh")
+        return True
+    _install_openclaw_into(root, "Synapse skill installed for NanoClaw.")
+    ok, detail = _verify_openclaw_skill(root)
+    if ok:
+        print(f"✅ Verified: {detail}")
+    return ok
+
+
+def install_all(db_path: str, dry_run: bool = False) -> Dict[str, bool]:
+    """Install to all detected/possible targets at once."""
+    results = {}
+    for name, fn in [("claude", install_claude_enhanced), ("openclaw", install_openclaw_enhanced), ("nanoclaw", install_nanoclaw_enhanced)]:
+        try:
+            results[name] = fn(db_path, dry_run=dry_run)
+        except Exception as exc:
+            print(f"⚠️  {name}: {exc}")
+            results[name] = False
+    return results
+
+
 class ClientInstaller:
     TARGETS = {
         "claude": install_claude,
         "openclaw": install_openclaw,
         "nanoclaw": install_nanoclaw,
+    }
+    ENHANCED_TARGETS = {
+        "claude": install_claude_enhanced,
+        "openclaw": install_openclaw_enhanced,
+        "nanoclaw": install_nanoclaw_enhanced,
     }

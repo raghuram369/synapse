@@ -22,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 from typing import Any, Dict
 
+from pathlib import Path
 from client import SynapseClient, SynapseRequestError
 from exceptions import SynapseConnectionError
 from demo_runner import DemoRunner
@@ -1745,6 +1746,9 @@ def cmd_card(args):
     if action == 'export':
         cmd_card_export(args)
         return
+    if action == 'share':
+        cmd_card_share(args)
+        return
     print("❌ Unknown card action")
     sys.exit(1)
 
@@ -1910,7 +1914,7 @@ def cmd_demo(args):
 
 
 def cmd_install(args):
-    from installer import ClientInstaller
+    from installer import ClientInstaller, install_all
 
     if args.list:
         print("Available install targets:")
@@ -1919,18 +1923,383 @@ def cmd_install(args):
         return
 
     target = (args.target or "").strip().lower()
+    dry_run = getattr(args, "dry_run", False)
+    verify_only = getattr(args, "verify_only", False)
+
+    if target == "all":
+        install_all(args.db or APPLIANCE_DB_DEFAULT, dry_run=dry_run)
+        return
+
     if not target:
         print("Usage: synapse install --list | synapse install <target> [--db PATH]")
         print("Example: synapse install claude --db ./synapse_store")
         raise SystemExit(1)
 
-    installer = ClientInstaller.TARGETS.get(target)
-    if installer is None:
-        print(f"Unknown install target: {target}")
-        print(f"Available targets: {', '.join(sorted(ClientInstaller.TARGETS))}")
-        raise SystemExit(1)
+    if dry_run or verify_only:
+        enhanced = ClientInstaller.ENHANCED_TARGETS.get(target)
+        if enhanced is None:
+            print(f"Unknown install target: {target}")
+            print(f"Available targets: {', '.join(sorted(ClientInstaller.TARGETS))}")
+            raise SystemExit(1)
+        enhanced(args.db or APPLIANCE_DB_DEFAULT, dry_run=dry_run, verify_only=verify_only)
+    else:
+        installer = ClientInstaller.TARGETS.get(target)
+        if installer is None:
+            print(f"Unknown install target: {target}")
+            print(f"Available targets: {', '.join(sorted(ClientInstaller.TARGETS))}")
+            raise SystemExit(1)
+        installer(args.db or APPLIANCE_DB_DEFAULT)
 
-    installer(args.db or APPLIANCE_DB_DEFAULT)
+
+# ─── Start command ────────────────────────────────────────────────────────────
+
+def cmd_start(args):
+    from installer import _detect_targets, _claude_config_path
+
+    db_path = _resolve_appliance_db_path(args)
+    port = args.port
+    inspect_flag = getattr(args, "inspect_flag", False)
+    sleep_schedule = getattr(args, "sleep_schedule", None)
+
+    # Start daemon (reuse cmd_up logic)
+    pid_path = _appliance_pid_path()
+    existing_pid = _read_daemon_pid()
+    already_running = existing_pid is not None and _pid_is_running(existing_pid)
+
+    if not already_running:
+        if existing_pid is not None:
+            _clear_daemon_pid(pid_path)
+        command = _daemon_command(port=port, db_path=db_path, mode="appliance")
+        process = _start_synapse_daemon(command)
+        daemon_pid = _wait_for_pid_file(pid_path)
+        if daemon_pid is None:
+            daemon_pid = process.pid
+            _write_daemon_pid(pid_path, daemon_pid)
+
+    # Handle sleep schedule
+    if sleep_schedule and sleep_schedule != "off":
+        state_dir = _appliance_state_dir()
+        os.makedirs(state_dir, exist_ok=True)
+        config_path = os.path.join(state_dir, "config.json")
+        try:
+            with open(config_path, "r", encoding="utf-8") as fp:
+                config = json.load(fp)
+        except (FileNotFoundError, json.JSONDecodeError):
+            config = {}
+        config["sleep_schedule"] = sleep_schedule
+        with open(config_path, "w", encoding="utf-8") as fp:
+            json.dump(config, fp, indent=2)
+
+    # Optionally launch inspector
+    inspector_url = None
+    if inspect_flag:
+        inspector_port = 7463
+        inspector_url = f"http://127.0.0.1:{inspector_port}"
+        # Launch inspector in background
+        inspector_cmd = [
+            sys.executable,
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "cli.py"),
+            "inspector", "--port", str(inspector_port), "--db", db_path,
+        ]
+        subprocess.Popen(
+            inspector_cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+    # Detect targets
+    targets = _detect_targets(db_path)
+
+    # Print status box
+    print()
+    print(_bold("╔══════════════════════════════════════════════════════╗"))
+    print(_bold("║") + "  🧠 Synapse AI Memory                               " + _bold("║"))
+    print(_bold("╠══════════════════════════════════════════════════════╣"))
+    print(_bold("║") + f"  {_green('✅')} Memory service running on localhost:{port}       " + _bold("║"))
+
+    if targets.get("claude"):
+        print(_bold("║") + f"  {_green('✅')} Claude Desktop: connected                     " + _bold("║"))
+    else:
+        print(_bold("║") + f"  ⬜ Claude Desktop: not configured                 " + _bold("║"))
+        print(_bold("║") + f"     run: synapse install claude                    " + _bold("║"))
+
+    if targets.get("openclaw"):
+        print(_bold("║") + f"  {_green('✅')} OpenClaw: skill installed                     " + _bold("║"))
+    else:
+        print(_bold("║") + f"  ⬜ OpenClaw: not configured                       " + _bold("║"))
+        print(_bold("║") + f"     run: synapse install openclaw                  " + _bold("║"))
+
+    if inspector_url:
+        print(_bold("║") + f"  {_green('✅')} Inspector: {inspector_url}              " + _bold("║"))
+
+    if sleep_schedule and sleep_schedule != "off":
+        print(_bold("║") + f"  {_green('✅')} Auto-sleep: {sleep_schedule}                          " + _bold("║"))
+
+    print(_bold("╠══════════════════════════════════════════════════════╣"))
+    print(_bold("║") + "  Next steps:                                        " + _bold("║"))
+    print(_bold("║") + "   synapse remember 'something important'             " + _bold("║"))
+    print(_bold("║") + "   synapse recall 'what was important?'               " + _bold("║"))
+    print(_bold("║") + "   synapse doctor                                     " + _bold("║"))
+    print(_bold("╚══════════════════════════════════════════════════════╝"))
+    print()
+
+
+# ─── Enhanced doctor ──────────────────────────────────────────────────────────
+
+def cmd_doctor_enhanced(args):
+    db_path = _resolve_appliance_db_path(args)
+    json_output = getattr(args, "json", False)
+    results = []
+
+    def add_check(name, status, detail=""):
+        results.append({"name": name, "status": status, "detail": detail})
+
+    # Storage health
+    base = os.path.abspath(os.path.expanduser(db_path))
+    store_size = _store_file_size(db_path)
+    for label, status, detail in _check_store_files(db_path):
+        add_check(f"storage:{label}", status, detail)
+    add_check("storage:size", "pass", _human_size(store_size))
+
+    # Index consistency
+    try:
+        from synapse import Synapse
+        s = Synapse(db_path)
+        try:
+            mem_count = s.count()
+            bm25_count = len(s.inverted_index.doc_lengths)
+            if bm25_count == mem_count:
+                add_check("index:bm25_consistency", "pass", f"docs={bm25_count} matches memories={mem_count}")
+            else:
+                add_check("index:bm25_consistency", "warn", f"BM25 docs={bm25_count} vs memories={mem_count}")
+
+            # Contradictions
+            contradictions = _collect_contradictions(s)
+            count_c = len(contradictions)
+            add_check("contradictions:pending", "warn" if count_c > 0 else "pass", str(count_c))
+
+            # Sleep status
+            hook = s.sleep_runner.schedule_hook()
+            last_sleep = hook.get("last_sleep_at")
+            if last_sleep:
+                add_check("sleep:last", "pass", _format_datetime(last_sleep))
+            else:
+                add_check("sleep:last", "warn", "never")
+
+            # Auto-sleep config
+            state_dir = _appliance_state_dir()
+            config_path = os.path.join(state_dir, "config.json")
+            try:
+                with open(config_path, "r", encoding="utf-8") as fp:
+                    cfg = json.load(fp)
+                sched = cfg.get("sleep_schedule", "off")
+                add_check("sleep:auto", "pass" if sched != "off" else "warn", sched)
+            except (FileNotFoundError, json.JSONDecodeError):
+                add_check("sleep:auto", "warn", "not configured")
+
+            # Compile latency
+            try:
+                t0 = time.perf_counter()
+                s.compile_context("test health check", budget=200)
+                latency = (time.perf_counter() - t0) * 1000
+                add_check("performance:compile_context", "pass" if latency < 500 else "warn", f"{latency:.1f}ms")
+            except Exception as exc:
+                add_check("performance:compile_context", "fail", str(exc))
+
+        finally:
+            s.close()
+    except Exception as exc:
+        add_check("store:load", "fail", str(exc))
+
+    # Connected targets
+    try:
+        from installer import _detect_targets
+        targets = _detect_targets(db_path)
+        for name, installed in targets.items():
+            add_check(f"target:{name}", "pass" if installed else "warn",
+                       "installed" if installed else "not configured")
+    except Exception:
+        pass
+
+    # MCP server reachable
+    pid = _read_daemon_pid()
+    if pid and _pid_is_running(pid):
+        add_check("daemon:running", "pass", f"pid={pid}")
+    else:
+        add_check("daemon:running", "warn", "not running")
+
+    if json_output:
+        print(json.dumps(results, indent=2))
+        return
+
+    # Pretty print
+    issues = 0
+    print(_bold("🩺 Synapse Health Check"))
+    print(f"  Store: {db_path}")
+    print()
+    for check in results:
+        status = check["status"]
+        icon = {"pass": "✅", "warn": "⚠️", "fail": "❌"}.get(status, "❓")
+        detail = f" — {check['detail']}" if check["detail"] else ""
+        print(f"  {icon} {check['name']}{detail}")
+        if status != "pass":
+            issues += 1
+
+    print()
+    if issues:
+        print(_yellow(f"  {issues} issue(s) found"))
+    else:
+        print(_green("  All checks passed!"))
+
+
+# ─── Card share command ───────────────────────────────────────────────────────
+
+def cmd_card_share(args):
+    from synapse import Synapse
+    from card_share import share_card
+
+    db_path = _resolve_db_path(args)
+    s = Synapse(db_path)
+    try:
+        fmt = getattr(args, "format", "markdown")
+        if fmt == "md":
+            fmt = "markdown"
+        result = share_card(
+            s,
+            args.query,
+            budget=args.budget,
+            policy=args.policy,
+            redact=getattr(args, "redact", None),
+            format=fmt,
+        )
+        output = getattr(args, "output", None)
+        if output:
+            with open(output, "w", encoding="utf-8") as fp:
+                fp.write(result)
+            print(f"✅ Card written to {output}")
+        else:
+            print(result)
+    finally:
+        s.close()
+
+
+# ─── Import wizard ────────────────────────────────────────────────────────────
+
+def cmd_import_wizard(args):
+    from importers import MemoryImporter
+    from synapse import Synapse
+
+    db_path = _resolve_db_path(args)
+
+    print(_bold("🧙 Synapse Import Wizard"))
+    print()
+    print("  1) ChatGPT export")
+    print("  2) Claude export")
+    print("  3) Notes folder")
+    print("  4) Clipboard")
+    print("  5) JSONL/CSV")
+    print()
+
+    try:
+        choice = input("Select source [1-5]: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\nCancelled.")
+        return
+
+    source_map = {"1": "chatgpt", "2": "claude", "3": "notes", "4": "clipboard", "5": "jsonl"}
+    source = source_map.get(choice)
+    if not source:
+        print("Invalid selection.")
+        return
+
+    path = None
+    if source != "clipboard":
+        # Auto-detect common paths
+        suggestions = []
+        import glob as _glob
+        if source == "chatgpt":
+            suggestions = _glob.glob(os.path.expanduser("~/Downloads/*chatgpt*.json"))
+        elif source == "claude":
+            suggestions = _glob.glob(os.path.expanduser("~/Downloads/*claude*.json"))
+
+        if suggestions:
+            print(f"\n  Auto-detected: {suggestions[0]}")
+            try:
+                use_detected = input(f"  Use this? [Y/n]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print("\nCancelled.")
+                return
+            if use_detected in ("", "y", "yes"):
+                path = suggestions[0]
+
+        if not path:
+            try:
+                path = input("  File/folder path: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\nCancelled.")
+                return
+            if not path:
+                print("No path provided.")
+                return
+
+    # Preview
+    if path and os.path.isfile(path):
+        size = os.path.getsize(path)
+        lines = 0
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as fp:
+                for _ in fp:
+                    lines += 1
+        except Exception:
+            pass
+        est_memories = max(1, lines // 10)
+        print(f"\n  Preview: ~{lines:,} lines, ~{est_memories:,} est. memories, {_human_size(size)}")
+    elif path and os.path.isdir(path):
+        file_count = sum(1 for _ in Path(path).rglob("*.md")) if Path else 0
+        print(f"\n  Preview: ~{file_count} markdown files found")
+
+    # Policy selection
+    print("\n  Apply policy first?")
+    print("  1) minimal  2) private  3) work  4) ephemeral  5) none")
+    try:
+        policy_choice = input("  Policy [5]: ").strip() or "5"
+    except (EOFError, KeyboardInterrupt):
+        print("\nCancelled.")
+        return
+    policy_map = {"1": "minimal", "2": "private", "3": "work", "4": "ephemeral", "5": None}
+    policy = policy_map.get(policy_choice)
+
+    # Import
+    print("\n  Importing...")
+    s = Synapse(db_path)
+    try:
+        importer = MemoryImporter(s)
+        if policy:
+            s.policy_manager.set_preset(policy)
+
+        if source == "clipboard":
+            report = importer.from_clipboard()
+        elif source in ("chatgpt", "claude"):
+            report = importer.from_chat_transcript(path, format=source if source == "chatgpt" else "claude")
+        elif source == "notes":
+            report = importer.from_markdown_folder(path, recursive=True)
+        elif source == "jsonl":
+            if path.endswith(".csv"):
+                report = importer.from_csv(path)
+            else:
+                report = importer.from_jsonl(path)
+        else:
+            print("Unsupported source.")
+            return
+
+        print(f"\n  ✅ Imported: {report.imported}")
+        print(f"  ⏭  Skipped: {report.skipped}")
+        print(f"  ❌ Errors: {report.errors}")
+        print(f"  ⏱  Duration: {report.duration_ms:.1f}ms")
+    finally:
+        s.close()
 
 
 # ─── Federation commands (standalone) ────────────────────────────────────────
@@ -2216,6 +2585,16 @@ def main():
     p_export.add_argument('--db', help='Synapse AI Memory database path')
     p_export.set_defaults(card_action='export')
 
+    p_share = card_sub.add_parser('share', help='Generate shareable memory card')
+    p_share.add_argument('query')
+    p_share.add_argument('--budget', type=int, default=1600)
+    p_share.add_argument('--policy', default='balanced')
+    p_share.add_argument('--redact', choices=['pii', 'names', 'numbers'], default=None)
+    p_share.add_argument('--format', choices=['md', 'markdown', 'html'], default='markdown')
+    p_share.add_argument('--output', help='Output file path')
+    p_share.add_argument('--db', help='Synapse AI Memory database path')
+    p_share.set_defaults(card_action='share')
+
     p_checkpoint = subparsers.add_parser('checkpoint', help='Create and manage checkpoints')
     p_checkpoint.add_argument('--db', help='Synapse AI Memory database path')
     cp_sub = p_checkpoint.add_subparsers(dest='checkpoint_action', help='Checkpoint actions')
@@ -2259,11 +2638,18 @@ def main():
 
     p = subparsers.add_parser('doctor', help='Run MCP appliance health checks')
     p.add_argument('--db', default=APPLIANCE_DB_DEFAULT, help='MCP storage path')
+    p.add_argument('--json', action='store_true', help='Machine-readable JSON output')
 
     p = subparsers.add_parser('serve', help='Start MCP memory appliance')
     p.add_argument('--db', default=APPLIANCE_DB_DEFAULT, help='Storage path')
     p.add_argument('--port', type=int, default=8765, help='HTTP JSON-RPC port (requires --http)')
     p.add_argument('--http', action='store_true', help='Run as HTTP server on localhost')
+
+    p = subparsers.add_parser('start', help='Golden path: start Synapse with status')
+    p.add_argument('--db', default=APPLIANCE_DB_DEFAULT, help='Storage path')
+    p.add_argument('--port', type=int, default=APPLIANCE_DAEMON_PORT, help='Service port')
+    p.add_argument('--inspect', dest='inspect_flag', action='store_true', help='Launch inspector web UI')
+    p.add_argument('--sleep', dest='sleep_schedule', choices=['daily', 'hourly', 'off'], default=None, help='Auto-sleep schedule')
 
     p = subparsers.add_parser('up', help='Start Synapse appliance daemon')
     p.add_argument('--db', default=APPLIANCE_DB_DEFAULT, help='Storage path')
@@ -2305,9 +2691,14 @@ def main():
     p.add_argument('peer', help='Peer URL to query')
 
     p = subparsers.add_parser('install', help='Install Synapse client integrations')
-    p.add_argument('target', nargs='?', help='Install target (claude, openclaw, nanoclaw)')
+    p.add_argument('target', nargs='?', help='Install target (claude, openclaw, nanoclaw, all)')
     p.add_argument('--db', default=APPLIANCE_DB_DEFAULT, help='Synapse database path')
     p.add_argument('--list', action='store_true', help='Show available install targets')
+    p.add_argument('--dry-run', action='store_true', help='Preview changes without applying')
+    p.add_argument('--verify-only', action='store_true', help='Only verify existing installation')
+
+    p = subparsers.add_parser('import-wizard', help='Interactive import wizard')
+    p.add_argument('--db', help='Synapse AI Memory database path')
 
     args = parser.parse_args()
 
@@ -2335,7 +2726,9 @@ def main():
         'diff': cmd_diff,
         'pack': cmd_pack,
         'install': cmd_install,
-        'doctor': cmd_doctor,
+        'doctor': cmd_doctor_enhanced,
+        'start': cmd_start,
+        'import-wizard': cmd_import_wizard,
         'up': cmd_up,
         'down': cmd_down,
         'status': cmd_status,
