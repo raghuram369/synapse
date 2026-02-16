@@ -26,18 +26,27 @@ import logging
 import math
 import re
 from datetime import datetime, timezone
+from collections import defaultdict
+from itertools import combinations
 import time
 from dataclasses import dataclass, field
 from context_pack import ContextCompiler, ContextPack
 from typing import Any, Dict, List, Optional, Set
+from communities import Community, CommunityDetector
 
 from temporal import latest_facts, memories_as_of, memories_during, parse_temporal
 from embeddings import EmbeddingIndex
+from sleep import SleepReport, SleepRunner
+from belief import BeliefTracker, BeliefVersion
+from forgetting import ForgettingPolicy
+from evidence import EvidenceCompiler
+from normalization import ENTITY_NORMALIZER
 from entity_graph import extract_concepts, expand_query
 from contradictions import ContradictionDetector
 from exceptions import SynapseValidationError
 from extractor import extract_facts
 from graph_retrieval import GraphRetriever
+from triples import TripleIndex, extract_triples
 from indexes import (
     ConceptGraph,
     EdgeGraph,
@@ -53,7 +62,15 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-MEMORY_TYPES: Set[str] = {"fact", "event", "preference", "skill", "observation", "consolidated"}
+MEMORY_TYPES: Set[str] = {
+    "fact",
+    "event",
+    "preference",
+    "skill",
+    "observation",
+    "consolidated",
+    "semantic",
+}
 MEMORY_LEVELS: Set[str] = {"instance", "pattern", "profile"}
 EDGE_TYPES: Set[str] = {
     "caused_by", "contradicts", "reminds_of", "supports",
@@ -96,6 +113,8 @@ class Memory:
     consolidated: bool = False
     summary_of: List[int] = field(default_factory=list)
     score_breakdown: Optional[ScoreBreakdown] = field(default=None, repr=False)
+    disputes: List[Dict[str, Any]] = field(default_factory=list, repr=False)
+    evidence_pointers: List[Dict[str, Any]] = field(default_factory=list, repr=False)
 
     @property
     def effective_strength(self) -> float:
@@ -122,6 +141,7 @@ class Synapse:
 
     def __init__(self, path: str = ":memory:"):
         self.path = path
+        self._entity_normalizer = ENTITY_NORMALIZER
         
         # Initialize storage
         self.store = MemoryStore(path)
@@ -133,6 +153,10 @@ class Synapse:
         self.temporal_index = TemporalIndex()
         self.episode_index = EpisodeIndex()
         self.contradiction_detector = ContradictionDetector()
+        self.belief_tracker = BeliefTracker(contradiction_detector=self.contradiction_detector)
+        self.evidence_compiler = EvidenceCompiler()
+        self.forgetting_policy = ForgettingPolicy(self)
+        self.triple_index = TripleIndex()
         
         # Embedding index (optional — uses Ollama if available)
         self.embedding_index = EmbeddingIndex()
@@ -146,17 +170,35 @@ class Synapse:
         # Performance settings
         self._commit_batch_size = 100
         self._pending_commits = 0
-        
+
+        # Sleep mode
+        self._is_sleeping = False
+        self._last_sleep_at: Optional[float] = None
+        self.sleep_runner = SleepRunner(self)
+
+        # Community cache
+        self._community_detector = CommunityDetector()
+        self._communities: Optional[List[Community]] = None
+        self._communities_dirty = True
+        self._community_update_pending_nodes: Set[str] = set()
+        self._community_update_pending_edges: List[tuple] = []
+
         # Build indexes from stored data
         self._rebuild_indexes()
     
     def _rebuild_indexes(self):
         """Rebuild all indexes from stored data."""
+        self.triple_index = TripleIndex()
+        self._invalidate_communities()
+
         # Rebuild inverted index
         for memory_id, memory_data in self.store.memories.items():
             if not memory_data.get('consolidated', False):
                 self.inverted_index.add_document(memory_id, memory_data['content'])
                 self.temporal_index.add_memory(memory_id, memory_data['created_at'])
+                triples = extract_triples(memory_data['content'])
+                if triples:
+                    self.triple_index.add(memory_id, triples)
         
         # Rebuild concept graph
         for memory_id, memory_data in self.store.memories.items():
@@ -183,7 +225,14 @@ class Synapse:
                 episode_data['ended_at']
             )
             # Link memories to episodes (would need to be tracked in storage)
-    
+        memories_for_belief = [
+            self._memory_data_to_object(memory_data)
+            for memory_id, memory_data in self.store.memories.items()
+            if not memory_data.get('consolidated', False)
+            and memory_id is not None
+        ]
+        self.belief_tracker.rebuild(sorted(memories_for_belief, key=lambda item: item.created_at))
+        
     def remember(
         self,
         content: str,
@@ -234,14 +283,26 @@ class Synapse:
             )
 
         if extract:
-            return self._remember_with_extraction(
+            memory = self._remember_with_extraction(
                 content, memory_type, links, metadata, episode, deduplicate, now,
                 observed_ts, valid_from_ts, valid_to_ts,
             )
-        return self._remember_single_content(
-            content, memory_type, links, metadata, episode, deduplicate, now,
-            observed_ts, valid_from_ts, valid_to_ts,
-        )
+        else:
+            memory = self._remember_single_content(
+                content, memory_type, links, metadata, episode, deduplicate, now,
+                observed_ts, valid_from_ts, valid_to_ts,
+            )
+
+        if getattr(self, '_is_sleeping', False):
+            return memory
+
+        if self.should_sleep():
+            try:
+                self.sleep(verbose=False)
+            except Exception:
+                logger.exception("Auto-sleep failed during remember()")
+
+        return memory
     
     def _remember_with_extraction(self, content: str, memory_type: str, 
                                   links: Optional[List], metadata: Optional[Dict],
@@ -251,18 +312,18 @@ class Synapse:
         try:
             # Extract facts using LLM
             facts = extract_facts(content)
-            
+
             if not facts:
                 logger.warning("No facts extracted from content, storing as-is")
                 return self._remember_single_content(
                     content, memory_type, links, metadata, episode, deduplicate, now,
                     observed_at, valid_from, valid_to,
                 )
-            
+
             # Create memories for each extracted fact
             fact_memories = []
             fact_ids = []
-            
+
             for i, fact in enumerate(facts):
                 # Create metadata with original content reference
                 fact_metadata = metadata.copy() if metadata else {}
@@ -272,7 +333,7 @@ class Synapse:
                     'extracted_fact': True,
                     'total_facts': len(facts)
                 })
-                
+
                 # Store each fact as a separate memory
                 fact_memory = self._remember_single_content(
                     fact, memory_type, None, fact_metadata, episode, deduplicate, now,
@@ -280,13 +341,13 @@ class Synapse:
                 )
                 fact_memories.append(fact_memory)
                 fact_ids.append(fact_memory.id)
-            
+
             # Link all extracted facts together with "related" edges
             for i, source_id in enumerate(fact_ids):
                 for j, target_id in enumerate(fact_ids):
-                    if i != j:  # Don't link to self
+                    if i != j:
                         self.link(source_id, target_id, "related", 0.8)
-            
+
             # Handle original links - apply to all fact memories
             if links:
                 for fact_memory in fact_memories:
@@ -297,17 +358,20 @@ class Synapse:
                             weight = link.get('weight', 1.0)
                             if target_id:
                                 self.link(fact_memory.id, target_id, edge_type, weight)
-            
+
             # Return the first fact memory as the primary result
-            # (This maintains the API contract of returning a single Memory)
             return fact_memories[0]
-            
+
         except Exception as e:
             logger.warning("Fact extraction failed (%s), storing content as-is", e)
             return self._remember_single_content(
                 content, memory_type, links, metadata, episode, deduplicate, now,
                 observed_at, valid_from, valid_to,
             )
+
+    def register_alias(self, alias: str, canonical: str) -> None:
+        """Register an entity alias with the shared entity normalizer."""
+        self._entity_normalizer.register_alias(alias, canonical)
     
     def _remember_single_content(self, content: str, memory_type: str, 
                                  links: Optional[List], metadata: Optional[Dict],
@@ -361,6 +425,11 @@ class Synapse:
         
         # Extract and index concepts
         concepts = extract_concepts(content)
+        concept_names = [concept_name for concept_name, _ in concepts]
+        self._register_concept_graph_update(
+            new_nodes=concept_names,
+            new_edges=self._build_concept_edges(concept_names),
+        )
         for concept_name, category in concepts:
             self.concept_graph.link_memory_concept(memory_id, concept_name, category)
             
@@ -432,6 +501,12 @@ class Synapse:
             consolidated=False
         )
 
+        # Index extracted triples and feed belief tracker.
+        triples = extract_triples(content)
+        if triples:
+            self.triple_index.add(memory_id, triples)
+        self.belief_tracker.on_remember(memory)
+
         new_contradictions = self.contradiction_detector.check_new_memory(
             content,
             existing_memories,
@@ -484,6 +559,8 @@ class Synapse:
                retrieval_mode: str = "classic",
                temporal_boost: bool = True, explain: bool = False,
                conflict_aware: bool = False,
+               show_disputes: bool = False,
+               exclude_conflicted: bool = False,
                temporal: Optional[str] = None) -> List[Memory]:
         """
         Two-Stage Recall with adaptive blending (ported from V1):
@@ -492,11 +569,42 @@ class Synapse:
           Stage 2: Normalize, blend, apply effective strength, edge/episode expansion
         """
         now = time.time()
-        conflicted_memory_ids = (
-            self.contradiction_detector.get_conflicted_memory_ids()
-            if conflict_aware
-            else set()
-        )
+        need_conflicts = conflict_aware or show_disputes or exclude_conflicted
+        unresolved_contradictions = self.contradictions() if need_conflicts else []
+        conflicted_memory_ids = {
+            contradiction.memory_id_a
+            for contradiction in unresolved_contradictions
+        } | {
+            contradiction.memory_id_b
+            for contradiction in unresolved_contradictions
+        }
+
+        dispute_map: Dict[int, List[Dict[str, Any]]] = {}
+        if show_disputes:
+            dispute_map = self._build_dispute_map(unresolved_contradictions)
+
+        def _finalize_recall(result_memories: List[Memory]) -> List[Memory]:
+            if exclude_conflicted:
+                result_memories = [
+                    memory for memory in result_memories
+                    if memory.id not in conflicted_memory_ids
+                ]
+
+            if show_disputes:
+                for memory in result_memories:
+                    memory.disputes = dispute_map.get(memory.id, [])
+
+            if explain:
+                self._attach_explain_evidence(result_memories)
+
+            if result_memories:
+                self.concept_graph.activate_memories(
+                    [memory.id for memory in result_memories if memory.id is not None],
+                    now=now,
+                )
+            self._reinforce_memories([memory.id for memory in result_memories if memory.id is not None])
+            return result_memories
+
         if retrieval_mode not in {"classic", "graph"}:
             raise SynapseValidationError("retrieval_mode must be either 'classic' or 'graph'")
 
@@ -511,12 +619,14 @@ class Synapse:
                                    min_strength=min_strength, retrieval_mode=retrieval_mode,
                                    temporal_boost=temporal_boost, explain=explain,
                                    conflict_aware=conflict_aware,
+                                   show_disputes=show_disputes,
+                                   exclude_conflicted=exclude_conflicted,
                                    temporal=None)
                 if not base:
                     return []
                 head = base[0]
                 chain = self.history(head.id)
-                return [entry["memory"] for entry in chain]
+                return _finalize_recall([entry["memory"] for entry in chain])
 
             if temporal == "latest":
                 temporal_mode = "latest"
@@ -583,9 +693,7 @@ class Synapse:
             result = _apply_temporal_filter([memory for _, memory in all_memories])
             result = result[:limit]
             
-            # Reinforce accessed memories
-            self._reinforce_memories([m.id for m in result])
-            return result
+            return _finalize_recall(result)
         
         # Count total active memories
         total_memories = len([m for m in self.store.memories.values() 
@@ -923,14 +1031,54 @@ class Synapse:
             for memory in result_memories:
                 if memory.id in breakdowns:
                     memory.score_breakdown = breakdowns[memory.id]
-        
-        # Activate concepts referenced by returned memories (concept-level reinforcement)
-        self.concept_graph.activate_memories([m.id for m in result_memories], now=now)
 
-        # Reinforce accessed memories (per-memory reinforcement)
-        self._reinforce_memories([m.id for m in result_memories])
+        return _finalize_recall(result_memories)
 
-        return result_memories
+    def _attach_explain_evidence(self, memories: List[Memory]) -> None:
+        """Attach evidence pointers to recalled memories when explain=True."""
+        if not memories:
+            return
+
+        selected_ids = {memory.id for memory in memories if memory.id is not None}
+        if not selected_ids:
+            return
+
+        memory_map = {memory.id: memory for memory in memories if memory.id is not None}
+        chains = self.evidence_compiler.compile(memories, self.triple_index)
+
+        pointers_by_memory: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+        for chain in chains:
+            supporting = set(chain.supporting_memories)
+            contradicting = set(chain.contradicting_memories)
+            for memory_id in supporting:
+                if memory_id not in selected_ids:
+                    continue
+                others = sorted(supporting - {memory_id})
+                pointers_by_memory[memory_id].append(
+                    {
+                        "claim": chain.claim,
+                        "relation": "supports",
+                        "memory_ids": others,
+                        "confidence": chain.confidence,
+                    }
+                )
+            for memory_id in contradicting:
+                if memory_id not in selected_ids:
+                    continue
+                others = sorted(contradicting - {memory_id})
+                pointers_by_memory[memory_id].append(
+                    {
+                        "claim": chain.claim,
+                        "relation": "contradicts",
+                        "memory_ids": others,
+                        "confidence": chain.confidence,
+                    }
+                )
+
+        for memory_id, memory in memory_map.items():
+            pointers = pointers_by_memory.get(memory_id, [])
+            pointers.sort(key=lambda item: item.get("claim", ""))
+            memory.evidence_pointers = pointers
 
     def compile_context(
         self,
@@ -968,6 +1116,67 @@ class Synapse:
         """Return unresolved contradictions detected for this Synapse."""
         return self.contradiction_detector.unresolved_contradictions()
 
+    def _build_dispute_map(self, contradictions: List) -> Dict[int, List[Dict[str, Any]]]:
+        """Build per-memory dispute payloads for unresolved contradictions."""
+        # ContradictionDetector can yield multiple kinds for the same memory pair
+        # (e.g., mutual_exclusion plus a derived temporal_conflict). For recall
+        # disputes we want at most one dispute entry per (memory, other_memory).
+        kind_priority = {
+            "mutual_exclusion": 0,
+            "polarity": 1,
+            "numeric_range": 2,
+            "temporal_conflict": 3,
+        }
+
+        best: Dict[int, Dict[int, Dict[str, Any]]] = defaultdict(dict)
+
+        def _maybe_set(owner_id: int, other_id: int, other_text: str, kind: str, confidence: float) -> None:
+            existing = best[owner_id].get(other_id)
+            candidate = {
+                "memory_id": other_id,
+                "text": str(other_text or ""),
+                "kind": str(kind),
+                "confidence": float(confidence),
+            }
+            if existing is None:
+                best[owner_id][other_id] = candidate
+                return
+
+            existing_pri = kind_priority.get(existing.get("kind"), 99)
+            cand_pri = kind_priority.get(candidate.get("kind"), 99)
+            if cand_pri < existing_pri:
+                best[owner_id][other_id] = candidate
+                return
+            if cand_pri == existing_pri and candidate["confidence"] > float(existing.get("confidence", 0.0)):
+                best[owner_id][other_id] = candidate
+
+        for contradiction in contradictions:
+            a_id = contradiction.memory_id_a
+            b_id = contradiction.memory_id_b
+
+            a_data = self.store.memories.get(a_id, {})
+            b_data = self.store.memories.get(b_id, {})
+
+            _maybe_set(
+                owner_id=a_id,
+                other_id=b_id,
+                other_text=b_data.get("content", ""),
+                kind=contradiction.kind,
+                confidence=contradiction.confidence,
+            )
+            _maybe_set(
+                owner_id=b_id,
+                other_id=a_id,
+                other_text=a_data.get("content", ""),
+                kind=contradiction.kind,
+                confidence=contradiction.confidence,
+            )
+
+        disputes: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+        for owner_id, by_other in best.items():
+            disputes[owner_id] = sorted(by_other.values(), key=lambda item: item.get("memory_id", 0))
+        return disputes
+
     def resolve_contradiction(self, contradiction_id: int, winner_memory_id: int):
         """Resolve a contradiction by winner memory id; mark loser as superseded."""
         unresolved = self.contradictions()
@@ -995,6 +1204,22 @@ class Synapse:
         self.store.update_memory(loser_memory_id, {'metadata': json.dumps(loser_meta)})
 
         self.contradiction_detector.resolve_contradiction(contradiction_id)
+
+    def set_retention_rules(self, rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Apply declarative retention rules."""
+        return self.forgetting_policy.retention_rules(rules)
+
+    def forget_topic(self, topic: str):
+        """Forget all memories related to a topic/concept."""
+        return self.forgetting_policy.forget_topic(topic)
+
+    def redact(self, memory_id: int, fields: List[str] = None):
+        """Redact a memory while keeping provenance."""
+        return self.forgetting_policy.redact(memory_id, fields=fields)
+
+    def gdpr_delete(self, user_id: str = None, concept: str = None):
+        """Full deletion by user tag or concept."""
+        return self.forgetting_policy.gdpr_delete(user_id=user_id, concept=concept)
 
     def _coerce_temporal_value(self, value: Optional[Any], default: Optional[float] = None) -> Optional[float]:
         """Coerce an optional temporal value to a float timestamp."""
@@ -1036,6 +1261,117 @@ class Synapse:
                     'strength': min(self.store.memories[memory_id]['strength'] + REINFORCE_BOOST, 2.0)
                 }
                 self.store.update_memory(memory_id, updates)
+
+    def _build_concept_edges(self, concepts: List[str]) -> List[tuple]:
+        normalized = sorted({self._normalize_concept_for_community(concept) for concept in concepts})
+        if len(normalized) < 2:
+            return []
+
+        return [
+            (left, right, 1.0)
+            for left, right in combinations(normalized, 2)
+        ]
+
+    def _normalize_concept_for_community(self, concept: str) -> str:
+        if not concept:
+            return ""
+        return self._entity_normalizer.canonical(str(concept), keep_proper_nouns=False)
+
+    def _register_concept_graph_update(self, new_nodes: List[str], new_edges: List[tuple]) -> None:
+        if not new_nodes and not new_edges:
+            return
+        # Keep community recomputation lazy: mark dirty and queue updates.
+        # This matches the expectation that communities refresh during sleep
+        # (or on-demand via `communities()`), not on every remember().
+        self._communities_dirty = True
+        self._community_update_pending_nodes.update(
+            self._normalize_concept_for_community(node) for node in new_nodes
+        )
+        self._community_update_pending_edges.extend(new_edges)
+
+    def _invalidate_communities(self) -> None:
+        self._communities_dirty = True
+        self._community_update_pending_nodes = set()
+        self._community_update_pending_edges = []
+
+    def _refresh_communities(self, min_size: int = 3, force: bool = False) -> List[Community]:
+        if not force and self._communities is not None and not self._communities_dirty:
+            return self._communities
+
+        if self._communities_dirty and self._community_update_pending_nodes:
+            try:
+                communities = self._community_detector.incremental_update(
+                    communities=self._communities or [],
+                    new_nodes=sorted(self._community_update_pending_nodes),
+                    new_edges=self._community_update_pending_edges,
+                )
+            except Exception:
+                communities = self._community_detector.detect_communities(
+                    self.concept_graph,
+                    min_size=min_size,
+                )
+        else:
+            communities = self._community_detector.detect_communities(
+                self.concept_graph,
+                min_size=min_size,
+            )
+
+        self._communities = communities
+        self._communities_dirty = False
+        self._community_update_pending_nodes = set()
+        self._community_update_pending_edges = []
+        return self._communities
+
+    def communities(self) -> List[Community]:
+        """Return detected communities for concept co-occurrence."""
+        return self._refresh_communities()
+
+    def community_summary(self, concept: str) -> str:
+        """Return a zero-LLM summary for a concept's community."""
+        normalized = self._normalize_concept_for_community(concept)
+        if not normalized:
+            return "No community summary available"
+
+        communities = self.communities()
+        if not communities:
+            return "No community summary available"
+
+        target = None
+        for community in communities:
+            if normalized in community.concepts:
+                target = community
+                break
+
+        if target is None:
+            return "No community summary available"
+
+        memory_ids = set()
+        for concept_name in target.concepts:
+            memory_ids.update(self.concept_graph.get_concept_memories(concept_name))
+
+        memories = [
+            self._memory_data_to_object(memory_data)
+            for memory_id, memory_data in self.store.memories.items()
+            if memory_id in memory_ids and not memory_data.get('consolidated', False)
+        ]
+        if not memories:
+            return "No community summary available"
+
+        return target.summary(memories)
+
+    def should_sleep(self) -> bool:
+        """Return whether periodic maintenance should run."""
+        if self.count() >= self.sleep_runner._memory_threshold:
+            return True
+        if self._last_sleep_at is None:
+            return False
+        return (time.time() - self._last_sleep_at) >= self.sleep_runner.sleep_interval_seconds
+
+    def sleep(self, verbose: bool = False) -> SleepReport:
+        """Run sleep maintenance and refresh communities."""
+        result = self.sleep_runner.sleep(verbose=verbose)
+        self._refresh_communities(force=True)
+        return result
     
     def forget(self, memory_id: int) -> bool:
         """Remove a memory completely."""
@@ -1045,13 +1381,28 @@ class Synapse:
         # Remove from indexes
         self.inverted_index.remove_document(memory_id)
         self.concept_graph.unlink_memory(memory_id)
+        self._invalidate_communities()
         self.edge_graph.remove_memory_edges(memory_id)
         self.temporal_index.remove_memory(memory_id)
         self.episode_index.remove_memory(memory_id)
         self.embedding_index.remove(memory_id)
+        self.triple_index.remove_memory(memory_id)
         
         # Remove from storage
-        return self.store.delete_memory(memory_id)
+        deleted = self.store.delete_memory(memory_id)
+        if deleted:
+            self.contradiction_detector.remove_memory(memory_id)
+            self.belief_tracker.remove_memory(memory_id)
+            memories_for_belief = [
+                self._memory_data_to_object(memory_data)
+                for memory_data in self.store.memories.values()
+                if not memory_data.get('consolidated', False)
+                and memory_data.get('id') is not None
+            ]
+            self.belief_tracker.rebuild(
+                sorted(memories_for_belief, key=lambda item: item.created_at)
+            )
+        return deleted
     
     def link(self, source_id: int, target_id: int, edge_type: str, weight: float = 1.0) -> None:
         """Create a directed edge between two memories.
@@ -1079,6 +1430,27 @@ class Synapse:
             'created_at': time.time()
         }
         self.store.insert_edge(edge_data)
+
+    def _link_memory_to_pattern(
+        self,
+        source_id: int,
+        target_id: int,
+        edge_type: str = "reminds_of",
+        weight: float = 1.0,
+    ) -> None:
+        """Create internal graph edges for memory provenance links."""
+        if source_id is None or target_id is None:
+            return
+        if source_id == target_id:
+            return
+        if source_id not in self.store.memories or target_id not in self.store.memories:
+            return
+        try:
+            self.link(source_id, target_id, edge_type, weight)
+        except SynapseValidationError:
+            # Defensive: keep sleep-mode maintenance running even if provenance
+            # links fail due to invalid edge metadata.
+            return
     
     def consolidate(self, min_cluster_size: int = 3, similarity_threshold: float = 0.7,
                     max_age_days: Optional[float] = None, dry_run: bool = False) -> List[Dict[str, Any]]:
@@ -1263,7 +1635,12 @@ class Synapse:
             # Index the consolidated memory
             self.inverted_index.add_document(new_id, summary)
             self.temporal_index.add_memory(new_id, now)
-            for concept_name in all_concepts:
+            new_concept_names = sorted(all_concepts)
+            self._register_concept_graph_update(
+                new_nodes=new_concept_names,
+                new_edges=self._build_concept_edges(new_concept_names),
+            )
+            for concept_name in new_concept_names:
                 category = self.concept_graph.concepts[concept_name].category if concept_name in self.concept_graph.concepts else 'general'
                 self.concept_graph.link_memory_concept(new_id, concept_name, category)
 
@@ -1280,7 +1657,7 @@ class Synapse:
             results.append(result_entry)
 
         return results
-    
+
     def _find_or_create_episode(self, episode_name: str, timestamp: float) -> int:
         """Find existing episode or create a new one."""
         # For explicit episode names, always group together regardless of time
@@ -1418,6 +1795,14 @@ class Synapse:
 
         results.sort(key=lambda x: x['timestamp'])
         return results
+
+    def beliefs(self) -> Dict[str, BeliefVersion]:
+        """Return all currently valid belief versions."""
+        return self.belief_tracker.get_all_current()
+
+    def belief_history(self, topic: str) -> List[BeliefVersion]:
+        """Return versions for facts matching a topic-like filter."""
+        return self.belief_tracker.get_matching_history(topic)
 
     @staticmethod
     def _parse_temporal_arg(temporal: str) -> Optional[float]:

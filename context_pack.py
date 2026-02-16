@@ -69,9 +69,22 @@ class ContextPack:
         lines.append("\nEvidence:")
         if self.evidence:
             for item in self.evidence:
-                lines.append(
-                    f"- [{item.get('source_id')}] {item.get('relation')} [{item.get('target_id')}]"
-                )
+                if isinstance(item, dict) and isinstance(item.get("claim"), str):
+                    supporting = item.get("supporting_memories") or []
+                    contradicting = item.get("contradicting_memories") or []
+                    confidence = item.get("confidence")
+                    if isinstance(confidence, (int, float)):
+                        confidence_text = f"{confidence:.2f}"
+                    else:
+                        confidence_text = "n/a"
+                    lines.append(
+                        f"- {item['claim']} | support: {supporting} | "
+                        f"contradicts: {contradicting} | confidence: {confidence_text}"
+                    )
+                else:
+                    lines.append(
+                        f"- [{item.get('source_id')}] {item.get('relation')} [{item.get('target_id')}]"
+                    )
         else:
             lines.append("- none")
 
@@ -118,7 +131,11 @@ class ContextPack:
 
         if self.evidence:
             evidence_lines = [
-                f"{item.get('source_id')}->{item.get('relation')}->{item.get('target_id')}"
+                (
+                    f"{item.get('claim')}::{item.get('supporting_memories', [])}"
+                    if isinstance(item, dict) and isinstance(item.get("claim"), str)
+                    else f"{item.get('source_id')}->{item.get('relation')}->{item.get('target_id')}"
+                )
                 for item in self.evidence[:3]
             ]
             lines.append("Evidence: " + ", ".join(evidence_lines))
@@ -214,10 +231,14 @@ class ContextCompiler:
 
         summary_start = time.perf_counter()
         summaries = self._generate_summaries(memory_records, concept_names)
+        community_summaries = self._generate_community_summaries(
+            concept_names,
+        )
+        summaries.extend(community_summaries)
         timings["summaries_ms"] = (time.perf_counter() - summary_start) * 1000.0
 
         evidence_start = time.perf_counter()
-        evidence = self._build_evidence_chains(memory_records)
+        evidence = self._build_evidence_chains(recalled)
         timings["evidence_ms"] = (time.perf_counter() - evidence_start) * 1000.0
 
         pack = self._pack_to_budget(
@@ -427,12 +448,56 @@ class ContextCompiler:
 
         return summaries[:8]
 
-    def _build_evidence_chains(self, memories: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        id_to_memory: Dict[int, Dict[str, Any]] = {
-            memory["id"]: memory for memory in memories if memory.get("id") is not None
-        }
-        memory_ids = set(id_to_memory.keys())
+    def _generate_community_summaries(
+        self,
+        concepts: Set[str],
+    ) -> List[str]:
+        if not concepts:
+            return []
 
+        summaries: List[str] = []
+        seen: Set[str] = set()
+
+        for concept in sorted(concepts):
+            if not hasattr(self.synapse, "community_summary"):
+                break
+            summary = self.synapse.community_summary(concept)
+            if not summary or summary in seen:
+                continue
+            if summary.startswith("No community summary available"):
+                continue
+            summaries.append(summary)
+            seen.add(summary)
+            if len(summaries) >= 3:
+                break
+
+        return summaries
+
+    def _build_evidence_chains(self, memories: List[Any]) -> List[Dict[str, Any]]:
+        memory_ids = {
+            memory.id for memory in memories
+            if getattr(memory, "id", None) is not None
+        }
+        if not memory_ids:
+            return []
+
+        compiler = self.synapse.evidence_compiler
+        chains = []
+        if compiler is not None:
+            for chain in compiler.compile(memories, getattr(self.synapse, "triple_index", None)):
+                # Keep a uniform dict shape for pack.evidence so callers can
+                # always access source/target/relation without KeyError.
+                payload = asdict(chain)
+                payload.setdefault("source_id", None)
+                payload.setdefault("target_id", None)
+                payload.setdefault("relation", "claim")
+                chains.append(payload)
+
+        legacy = self._build_legacy_evidence(list(memory_ids), memories)
+        return chains + legacy
+
+    def _build_legacy_evidence(self, memory_ids: Set[int], memories: List[Any]) -> List[Dict[str, Any]]:
+        id_to_memory = {memory.id: memory for memory in memories if getattr(memory, "id", None) is not None}
         evidence: List[Dict[str, Any]] = []
         seen = set()
 
@@ -454,8 +519,11 @@ class ContextCompiler:
                     }
                 )
 
-        for memory_id, memory in id_to_memory.items():
-            metadata = memory.get("metadata") or {}
+        for memory_id in memory_ids:
+            memory = id_to_memory.get(memory_id)
+            if memory is None:
+                continue
+            metadata = getattr(memory, "metadata", {}) or {}
             for relation in ("supersedes", "superseded_by"):
                 peer_id = metadata.get(relation)
                 if isinstance(peer_id, int) and peer_id in memory_ids:
@@ -598,9 +666,21 @@ class ContextCompiler:
         for item in evidence:
             if remaining <= 0:
                 break
-            evidence_snippet = (
-                f"{item.get('source_id')}->{item.get('relation')}->{item.get('target_id')}"
-            )
+            if isinstance(item, dict) and isinstance(item.get("claim"), str):
+                supporting = ",".join(str(mid) for mid in item.get("supporting_memories", []))
+                contradicting = ",".join(str(mid) for mid in item.get("contradicting_memories", []))
+                confidence = item.get("confidence")
+                if isinstance(confidence, (int, float)):
+                    confidence_text = f"{confidence:.2f}"
+                else:
+                    confidence_text = "n/a"
+                evidence_snippet = (
+                    f"{item.get('claim')}|s:{supporting}|c:{contradicting}|conf:{confidence_text}"
+                )
+            else:
+                evidence_snippet = (
+                    f"{item.get('source_id')}->{item.get('relation')}->{item.get('target_id')}"
+                )
             if len(evidence_snippet) <= remaining:
                 selected_evidence.append(item)
                 remaining -= len(evidence_snippet) + 2

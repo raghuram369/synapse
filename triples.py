@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass
 from typing import Dict, List, Set, Tuple
 
+from normalization import ENTITY_NORMALIZER
+
 
 @dataclass
 class Triple:
@@ -19,17 +21,7 @@ class Triple:
     confidence: float  # 0.0 - 1.0
     source_span: Tuple[int, int]
 
-
-ENTITY_ALIAS_MAP: Dict[str, str] = {
-    "nyc": "new york city",
-    "usa": "united states",
-    "u.s.": "united states",
-}
-
-
-_ARTICLE_RE = re.compile(r"^(the|a|an)\s+", re.IGNORECASE)
-_LEADING_SPACE_RE = re.compile(r"\s+")
-_TRAILING_PUNCT_RE = re.compile(r"[\s,.;:!?]+$")
+ENTITY_ALIAS_MAP = ENTITY_NORMALIZER.alias_map
 _NEGATION_RE = re.compile(
     r"\b(?:not|never|no longer|doesn't|doesn’t|didn't|didn’t|can't|can’t|won't|won’t|isn't|isn’t|aren't|aren’t|wasn't|wasn’t|weren't|weren’t)\b",
     re.IGNORECASE,
@@ -69,55 +61,8 @@ _WORKS_RE = re.compile(
 
 
 def normalize_entity(text: str) -> str:
-    """Normalize a raw entity mention for indexing and matching.
-
-    The function:
-    - lowercases
-    - strips punctuation, repeated whitespace, and articles
-    - applies a tiny lemmatization pass for common forms
-    - resolves aliases from ``ENTITY_ALIAS_MAP``
-    """
-    if not text:
-        return ""
-
-    normalized = text.strip().strip("\"'")
-    normalized = normalized.lower()
-    normalized = _LEADING_SPACE_RE.sub(" ", normalized).strip()
-    normalized = _TRAILING_PUNCT_RE.sub("", normalized)
-
-    # Remove leading articles and possessive artifacts
-    if normalized.endswith("'s"):
-        normalized = normalized[:-2].strip()
-    normalized = _ARTICLE_RE.sub("", normalized).strip()
-
-    tokens = normalized.split()
-    if not tokens:
-        return ""
-    if tokens[0] in {"the", "a", "an"}:
-        tokens = tokens[1:]
-        normalized = " ".join(tokens)
-
-    tokens = [_lemmatize_token(token) for token in normalized.split() if token]
-    normalized = " ".join(tokens).strip()
-    if not normalized:
-        return ""
-
-    return ENTITY_ALIAS_MAP.get(normalized, normalized)
-
-
-def _lemmatize_token(token: str) -> str:
-    token = re.sub(r"[\"'()]+", "", token)
-    if token in {"is", "are", "was", "were", "has", "have", "had"}:
-        return token
-    if len(token) > 4 and token.endswith("ies"):
-        return token[:-3] + "y"
-    if len(token) > 4 and token.endswith("ing"):
-        return token[:-3]
-    if len(token) > 3 and token.endswith("ed"):
-        return token[:-2]
-    if len(token) > 2 and token.endswith("s") and not token.endswith("ss"):
-        return token[:-1]
-    return token
+    """Normalize a raw entity mention for indexing and matching."""
+    return ENTITY_NORMALIZER.canonical(text, keep_proper_nouns=False)
 
 
 def _strip_tail(raw: str) -> str:
@@ -143,6 +88,28 @@ def _strip_leading_hedge(text: str) -> str:
     lowered = re.sub(r"^(?:i think|i guess)\s+", "", lowered, flags=re.IGNORECASE)
     lowered = re.sub(r"^(?:maybe|might|possibly|perhaps|probably)\s+", "", lowered, flags=re.IGNORECASE)
     return lowered.strip()
+
+def _strip_trailing_auxiliaries(subject: str) -> str:
+    """Trim auxiliary/negation tokens that can be accidentally captured as part of the subject."""
+    if not subject:
+        return ""
+    tokens = [t for t in re.findall(r"[A-Za-z0-9']+", subject) if t]
+    if not tokens:
+        return subject.strip()
+
+    strip_set = {
+        "do", "does", "did",
+        "is", "are", "was", "were",
+        "will", "going", "to",
+        "not", "never", "no", "longer",
+        "can't", "cant", "won't", "wont",
+        "doesn't", "doesnt", "didn't", "didnt", "isn't", "isnt", "aren't", "arent",
+        "wasn't", "wasnt", "weren't", "werent",
+    }
+    # Remove trailing auxiliary tokens repeatedly (e.g. "Alice does not" -> "Alice").
+    while tokens and tokens[-1].lower() in strip_set:
+        tokens.pop()
+    return " ".join(tokens).strip()
 
 
 def _derive_tense(fragment: str) -> str:
@@ -263,7 +230,8 @@ def extract_triples(text: str) -> List[Triple]:
 
         # X likes/prefers/wants Y
         for match in _LIKES_RE.finditer(segment_text):
-            subject = normalize_entity(_strip_leading_hedge(match.group("subject")))
+            raw_subject = _strip_trailing_auxiliaries(match.group("subject"))
+            subject = normalize_entity(_strip_leading_hedge(raw_subject))
             obj = normalize_entity(_strip_tail(match.group("tail")))
             if not subject or not obj:
                 continue
@@ -285,7 +253,8 @@ def extract_triples(text: str) -> List[Triple]:
 
         # X moved to Y
         for match in _MOVED_RE.finditer(segment_text):
-            subject = normalize_entity(_strip_leading_hedge(match.group("subject")))
+            raw_subject = _strip_trailing_auxiliaries(match.group("subject"))
+            subject = normalize_entity(_strip_leading_hedge(raw_subject))
             obj = normalize_entity(_strip_tail(match.group("tail")))
             if not subject or not obj:
                 continue
@@ -304,7 +273,8 @@ def extract_triples(text: str) -> List[Triple]:
 
         # X works at Y
         for match in _WORKS_RE.finditer(segment_text):
-            subject = normalize_entity(_strip_leading_hedge(match.group("subject")))
+            raw_subject = _strip_trailing_auxiliaries(match.group("subject"))
+            subject = normalize_entity(_strip_leading_hedge(raw_subject))
             obj = normalize_entity(_strip_tail(match.group("tail")))
             if not subject or not obj:
                 continue

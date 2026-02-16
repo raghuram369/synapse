@@ -203,6 +203,41 @@ class ContradictionDetector:
         self._resolved_pairs.add(key)
         return target
 
+    def remove_memory(self, memory_id: int) -> int:
+        """Remove all contradictions that involve *memory_id*.
+
+        Returns:
+            Number of contradictions removed.
+        """
+        if not isinstance(memory_id, int) or memory_id <= 0:
+            return 0
+
+        removed = 0
+        remaining = []
+        for contradiction in self.registered_contradictions:
+            if contradiction.memory_id_a == memory_id or contradiction.memory_id_b == memory_id:
+                removed += 1
+                continue
+            remaining.append(contradiction)
+
+        self.registered_contradictions = remaining
+        self._resolved_pairs = {
+            key
+            for key in self._resolved_pairs
+            if memory_id not in set(key[:2])
+        }
+
+        self._contradiction_index = {}
+        for idx, contradiction in enumerate(self.registered_contradictions):
+            key = self._pair_key(
+                contradiction.memory_id_a,
+                contradiction.memory_id_b,
+                contradiction.kind,
+            )
+            self._contradiction_index[key] = idx
+
+        return removed
+
     def get_conflicted_memory_ids(self) -> Set[int]:
         ids: Set[int] = set()
         for contradiction in self.unresolved_contradictions():

@@ -7,6 +7,8 @@ Sub-commands cover the core engine, portable format, and federation.
 from __future__ import annotations
 
 import argparse
+import datetime
+from collections import defaultdict
 import json
 import os
 import sys
@@ -18,6 +20,142 @@ from exceptions import SynapseConnectionError
 
 
 # ─── Formatting helpers ──────────────────────────────────────────────────────
+
+ANSI_RESET = "\033[0m"
+ANSI_BOLD = "\033[1m"
+ANSI_CYAN = "\033[36m"
+ANSI_GREEN = "\033[32m"
+ANSI_YELLOW = "\033[33m"
+ANSI_RED = "\033[31m"
+ANSI_BLUE = "\033[34m"
+ANSI_DIM = "\033[2m"
+_DAY_SECONDS = 60 * 60 * 24
+
+
+def _color(text: str, code: str) -> str:
+    if not sys.stdout.isatty():
+        return text
+    return f"{code}{text}{ANSI_RESET}"
+
+
+def _bold(text: str) -> str:
+    return _color(text, ANSI_BOLD)
+
+
+def _cyan(text: str) -> str:
+    return _color(text, ANSI_CYAN)
+
+
+def _green(text: str) -> str:
+    return _color(text, ANSI_GREEN)
+
+
+def _yellow(text: str) -> str:
+    return _color(text, ANSI_YELLOW)
+
+
+def _red(text: str) -> str:
+    return _color(text, ANSI_RED)
+
+
+def _blue(text: str) -> str:
+    return _color(text, ANSI_BLUE)
+
+
+def _dim(text: str) -> str:
+    return _color(text, ANSI_DIM)
+
+
+def _resolve_db_path(args) -> str:
+    return args.db or ":memory:"
+
+
+def _format_datetime(ts: float) -> str:
+    return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _normalize_concept_name(concept_graph, concept: str) -> str | None:
+    target = (concept or "").strip().lower()
+    if not target:
+        return None
+    if target in concept_graph.concepts:
+        return target
+    for name in concept_graph.concepts:
+        if name.lower() == target:
+            return name
+    return None
+
+
+def _resolve_concepts_for_memory(synapse, memory_id: int):
+    concepts = synapse.concept_graph.get_memory_concepts(memory_id)
+    return sorted(str(c) for c in concepts)
+
+
+def _collect_contradictions(synapse):
+    from contradictions import ContradictionDetector
+    detector = ContradictionDetector()
+    memories = [
+        synapse._memory_data_to_object(memory_data)
+        for memory_data in synapse.store.memories.values()
+        if not memory_data.get('consolidated', False)
+    ]
+    return detector.scan_memories(memories)
+
+
+def _memory_objects_by_id(synapse):
+    return {
+        memory_id: synapse._memory_data_to_object(memory_data)
+        for memory_id, memory_data in synapse.store.memories.items()
+        if not memory_data.get('consolidated', False)
+    }
+
+
+def _concept_activation(synapse, concept: str) -> float:
+    return synapse.concept_graph.concept_activation_strength(concept)
+
+
+def _format_conflict_kind(kind: str) -> str:
+    return {
+        "mutual_exclusion": "exclusion",
+        "numeric_range": "numeric",
+        "temporal_conflict": "temporal",
+        "polarity": "polarity",
+    }.get(kind, kind)
+
+
+def _suggest_resolution(kind: str) -> str:
+    return {
+        "polarity": "Supersede or replace the older statement to maintain consistency.",
+        "exclusion": "Keep one value and supersede conflicting alternatives in the same fact chain.",
+        "numeric": "Keep the most authoritative numeric source and close or override the older one.",
+        "temporal": "Prefer the most recent temporally-valid statement and supersede older facts.",
+    }.get(_format_conflict_kind(kind), "Review and resolve the pair manually.")
+
+
+def _memory_graph_score(synapse, memory_id: int) -> float:
+    edges = synapse.edge_graph.get_all_edges(memory_id)
+    if not edges:
+        return 0.0
+    total_weight = sum(float(edge.weight) for _, edge in edges)
+    return min(1.0, total_weight / (1.0 + len(edges)))
+
+
+def _history_snapshot(memory_id: int, synapse) -> list[dict]:
+    try:
+        chain = synapse.history(memory_id)
+        if len(chain) >= 2:
+            return chain
+    except Exception:
+        return []
+    return []
+
+
+def _memory_brief(content: str, max_len: int = 64) -> str:
+    cleaned = (content or "").replace("\n", " ")
+    if len(cleaned) <= max_len:
+        return cleaned
+    return f"{cleaned[:max_len-3]}..."
+
 
 def format_memory(memory: Dict[str, Any], show_metadata: bool = False) -> str:
     lines = []
@@ -215,7 +353,78 @@ def cmd_prune(args, client: SynapseClient):
         sys.exit(1)
 
 
-def cmd_stats(args, client: SynapseClient):
+def cmd_stats(args, client: SynapseClient | None = None):
+    if getattr(args, 'db', None):
+        from synapse import Synapse
+
+        s = Synapse(args.db)
+        try:
+            print(_bold("📊 Synapse Debug Stats"))
+
+            active_memories = [
+                mid for mid, memory_data in s.store.memories.items()
+                if not memory_data.get('consolidated', False)
+            ]
+            total_memories = len(active_memories)
+            total_concepts = len(s.concept_graph.concepts)
+            total_edges = len(s.store.edges)
+
+            contradictions = _collect_contradictions(s)
+            unresolved = len(contradictions)
+
+            print(_cyan("Core totals:"))
+            print(f"  Total memories: {total_memories}")
+            print(f"  Total concepts: {total_concepts}")
+            print(f"  Total edges: {total_edges}")
+            print(f"  Contradictions: {unresolved}")
+
+            hot = s.hot_concepts(k=10)
+            print(_cyan("Top 10 hottest concepts:"))
+            if hot:
+                for name, score in hot:
+                    print(f"  - {_green(name)}: {score:.3f}")
+            else:
+                print("  - none")
+
+            now = time.time()
+            buckets = defaultdict(int)
+            for memory_id in active_memories:
+                memory_data = s.store.memories[memory_id]
+                age_days = (now - memory_data['created_at']) / _DAY_SECONDS
+                if age_days < 1:
+                    buckets["<1 day"] += 1
+                elif age_days < 7:
+                    buckets["1-6 days"] += 1
+                elif age_days < 30:
+                    buckets["7-29 days"] += 1
+                elif age_days < 90:
+                    buckets["30-89 days"] += 1
+                else:
+                    buckets["90+ days"] += 1
+
+            print(_cyan("Memory age distribution:"))
+            for bucket, count in buckets.items():
+                print(f"  - {bucket}: {count}")
+
+            hook = s.sleep_runner.schedule_hook()
+            last_sleep = hook.get("last_sleep_at")
+            if last_sleep is None:
+                print(_cyan("Last sleep:") + " never")
+            else:
+                print(_cyan("Last sleep:") + f" {_format_datetime(last_sleep)}")
+                if hook.get("seconds_since_last_sleep") is not None:
+                    since = hook["seconds_since_last_sleep"]
+                    if since >= 0:
+                        print(_dim(f"  ({int(since)}s ago, next due at { _format_datetime(hook.get('next_due_at') or now)})"))
+
+        finally:
+            s.close()
+        return
+
+    if client is None:
+        print("❌ Server stats requires a running daemon. Pass --db for local stats.")
+        sys.exit(1)
+
     try:
         stats = client.stats()
         print(format_stats(stats))
@@ -269,23 +478,246 @@ def cmd_history(args):
     s.close()
 
 
+def cmd_why(args):
+    from synapse import Synapse
+    db_path = _resolve_db_path(args)
+    s = Synapse(db_path)
+    try:
+        memory_data = s.store.memories.get(args.id)
+        if not memory_data or memory_data.get('consolidated', False):
+            print(_red(f"⚠️  Memory #{args.id} not found"))
+            return
+        memory = s._memory_data_to_object(memory_data)
+
+        scored = None
+        matches = s.recall(context=memory.content, limit=25, explain=True)
+        for candidate in matches:
+            if candidate.id == args.id:
+                scored = candidate
+                break
+
+        if scored is None:
+            scored = memory
+            # Provide synthetic score components for unavailable breakdowns.
+            scored.score_breakdown = type("ScoreBreakdown", (), {
+                "bm25_score": 0.0,
+                "concept_score": 0.0,
+                "temporal_score": 0.0,
+                "episode_score": 0.0,
+                "concept_activation_score": 0.0,
+                "embedding_score": 0.0,
+                "match_sources": [],
+            })()
+
+        bd = scored.score_breakdown
+
+        print(_bold(f"🧠 Why memory #{memory.id}"))
+        print(f"  Content: {_yellow(_memory_brief(memory.content, max_len=120))}")
+        print(f"  Type: {memory.memory_type}")
+        print(f"  Strength: {memory.strength:.3f}")
+
+        print(_cyan("  Score components:"))
+        print(f"    BM25: {bd.bm25_score:.3f}")
+        print(f"    Concept: {bd.concept_score:.3f}")
+        print(f"    Temporal: {bd.temporal_score:.3f}")
+        print(f"    Episode: {bd.episode_score:.3f}")
+        print(f"    Activation: {bd.concept_activation_score:.3f}")
+        print(f"    Graph: {_memory_graph_score(s, memory.id):.3f}")
+
+        concepts = _resolve_concepts_for_memory(s, memory.id)
+        if concepts:
+            print(_cyan("  Linked concepts:"))
+            for concept in concepts:
+                print(f"    - {concept}")
+        else:
+            print(_dim("  No concepts linked"))
+
+        contradictions = _collect_contradictions(s)
+        relevant = [
+            c for c in contradictions
+            if args.id in {c.memory_id_a, c.memory_id_b}
+        ]
+        print(_cyan("  Contradictions:"))
+        if relevant:
+            for conflict in relevant:
+                other = conflict.memory_id_b if conflict.memory_id_a == args.id else conflict.memory_id_a
+                other_memory = s.store.memories.get(other)
+                snippet = other_memory['content'] if other_memory else "<missing>"
+                print(f"    - {_yellow(_format_conflict_kind(conflict.kind))} with #{other}: {snippet}")
+                print(f"      confidence: {conflict.confidence:.2f}")
+        else:
+            print(_dim("    None"))
+
+        chain = _history_snapshot(args.id, s)
+        if chain:
+            print(_cyan("  Belief chain:"))
+            for entry in chain:
+                state = "current" if entry['current'] else "archived"
+                m = entry['memory']
+                ts = _format_datetime(m.created_at)
+                print(f"    - #{m.id} [{ts}] ({state}) { _memory_brief(m.content, max_len=90)}")
+        else:
+            print(_dim("  Belief chain: none"))
+    finally:
+        s.close()
+
+
+def cmd_graph(args):
+    from synapse import Synapse
+    db_path = _resolve_db_path(args)
+    s = Synapse(db_path)
+    try:
+        concept = _normalize_concept_name(s.concept_graph, args.concept)
+        if concept is None:
+            print(_red(f"⚠️  Concept '{args.concept}' not found"))
+            return
+
+        base_activation = _concept_activation(s, concept)
+        print(_bold(f"🔗 Concept neighborhood: {concept}"))
+        print(f"  Activation: {base_activation:.3f}")
+
+        base_memories = set(s.concept_graph.get_concept_memories(concept))
+        one_hop: Dict[str, int] = defaultdict(int)
+        two_hop: Dict[str, int] = defaultdict(int)
+
+        for memory_id in base_memories:
+            for linked in s.concept_graph.get_memory_concepts(memory_id):
+                if linked.lower() == concept.lower():
+                    continue
+                one_hop[linked] += 1
+
+        print(_cyan("  1-hop neighbors:"))
+        if not one_hop:
+            print(_dim("    none"))
+        for concept_name in sorted(one_hop, key=lambda item: (-one_hop[item], item)):
+            mem_ids = sorted(s.concept_graph.get_concept_memories(concept_name))
+            strength = _concept_activation(s, concept_name)
+            print(f"    + {concept_name} (w={one_hop[concept_name]}) [act={strength:.2f}]")
+            if mem_ids:
+                preview = []
+                for memory_id in mem_ids[:4]:
+                    memory_data = s.store.memories.get(memory_id)
+                    if memory_data:
+                        preview.append(f"#{memory_id}:{_memory_brief(memory_data.get('content', ''), max_len=60)}")
+                print(f"      memories: {', '.join(preview)}")
+
+            for memory_id in mem_ids:
+                for linked in s.concept_graph.get_memory_concepts(memory_id):
+                    if linked.lower() in {concept.lower(), concept_name.lower()}:
+                        continue
+                    two_hop[linked] += 1
+
+        if two_hop:
+            print(_cyan("  2-hop neighbors:"))
+            for concept_name in sorted(two_hop, key=lambda item: (-two_hop[item], item)):
+                print(f"    + {concept_name} (w={two_hop[concept_name]})")
+        else:
+            print(_cyan("  2-hop neighbors: none"))
+    finally:
+        s.close()
+
+
+def cmd_conflicts(args):
+    from synapse import Synapse
+    db_path = _resolve_db_path(args)
+    s = Synapse(db_path)
+    try:
+        memory_by_id = _memory_objects_by_id(s)
+        conflicts = _collect_contradictions(s)
+        print(_bold("⚠️  Active contradictions"))
+        if not conflicts:
+            print(_dim("No unresolved contradictions"))
+            return
+
+        for idx, conflict in enumerate(conflicts, start=1):
+            left = memory_by_id.get(conflict.memory_id_a)
+            right = memory_by_id.get(conflict.memory_id_b)
+            kind = _format_conflict_kind(conflict.kind)
+            print(f"{idx}. {_yellow(kind.upper())} (confidence={conflict.confidence:.2f})")
+            print(f"   #{conflict.memory_id_a}: {_memory_brief(left.content if left else '[missing]', 110)}")
+            print(f"   #{conflict.memory_id_b}: {_memory_brief(right.content if right else '[missing]', 110)}")
+            print(f"   Suggestion: {_blue(_suggest_resolution(kind))}")
+    finally:
+        s.close()
+
+
+def cmd_beliefs(args):
+    from synapse import Synapse
+    db_path = _resolve_db_path(args)
+    s = Synapse(db_path)
+    try:
+        beliefs = s.beliefs()
+        print(_bold("🧭 Current worldview"))
+        if not beliefs:
+            print(_dim("No belief versions found"))
+            return
+
+        now = time.time()
+        for fact_key in sorted(beliefs):
+            version = beliefs[fact_key]
+            history = s.belief_tracker.get_history(fact_key)
+            version_count = len(history)
+            low_confidence = version.confidence < 0.7
+            recent = (now - version.valid_from) <= _DAY_SECONDS
+            flags = []
+            if low_confidence:
+                flags.append("low-confidence")
+            if recent:
+                flags.append("recent")
+            if not flags:
+                flags.append("stable")
+
+            print(_cyan(f"- {fact_key}"))
+            print(f"  current: {version.value} (conf={version.confidence:.2f}, memory=#{version.memory_id})")
+            print(f"  versions: {version_count} | flags: {', '.join(flags)}")
+    finally:
+        s.close()
+
+
 def cmd_timeline(args):
     from synapse import Synapse
-    db_path = args.db or ":memory:"
+    db_path = _resolve_db_path(args)
     s = Synapse(db_path)
-    changes = s.timeline(concept=args.concept)
-    if not changes:
-        print("🔍 No temporal changes found")
-    else:
-        print(f"📅 Timeline ({len(changes)} entries):\n")
-        for entry in changes:
-            m = entry['memory']
-            import datetime
-            ts = datetime.datetime.fromtimestamp(entry['timestamp'])
-            chain_id = entry.get('fact_chain_id', '?')
-            action = "supersedes" if entry.get('supersedes') else "initial"
-            print(f"  [{ts.strftime('%Y-%m-%d %H:%M')}] #{m.id} ({action}, chain={chain_id}): {m.content}")
-    s.close()
+    try:
+        concept = args.concept.lower() if args.concept else None
+        now = time.time()
+        cutoff = None if args.days is None else now - (args.days * _DAY_SECONDS)
+
+        entries = []
+        for memory_id, memory_data in s.store.memories.items():
+            if memory_data.get('consolidated', False):
+                continue
+            created_at = memory_data.get('created_at')
+            if created_at is None:
+                continue
+            if cutoff is not None and created_at < cutoff:
+                continue
+            if concept is not None:
+                concepts = {c.lower() for c in s.concept_graph.get_memory_concepts(memory_id)}
+                if concept not in concepts:
+                    continue
+
+            m = s._memory_data_to_object(memory_data)
+            entries.append(m)
+
+        if not entries:
+            print(_dim("🔍 No memories in timeline"))
+            return
+
+        entries.sort(key=lambda m: m.created_at)
+        print(_bold(f"📅 Timeline ({len(entries)} entries)"))
+        for entry in entries:
+            ts = _format_datetime(entry.created_at)
+            v_from = entry.valid_from
+            v_to = entry.valid_to
+            window = ""
+            if v_from is not None or v_to is not None:
+                from_txt = _format_datetime(v_from) if v_from is not None else "open"
+                to_txt = _format_datetime(v_to) if v_to is not None else "open"
+                window = f" validity=[{from_txt} -> {to_txt}]"
+            print(f"  [{ts}] #{entry.id} ({entry.memory_type}){window} {entry.content}")
+    finally:
+        s.close()
 
 
 def cmd_consolidate(args):
@@ -584,7 +1016,8 @@ def main():
     p.add_argument('--no-dry-run', dest='dry_run', action='store_false')
     p.set_defaults(dry_run=True)
 
-    subparsers.add_parser('stats', help='Show server statistics')
+    p = subparsers.add_parser('stats', help='Show statistics')
+    p.add_argument('--db', help='Synapse AI Memory database path')
     subparsers.add_parser('ping', help='Ping the server')
 
     p = subparsers.add_parser('shutdown', help='Shutdown the server')
@@ -597,6 +1030,21 @@ def main():
 
     p = subparsers.add_parser('timeline', help='Show timeline of fact changes')
     p.add_argument('--concept', default=None, help='Filter by concept')
+    p.add_argument('--db', help='Synapse AI Memory database path')
+    p.add_argument('--days', type=float, default=None, help='Only show entries within last N days')
+
+    p = subparsers.add_parser('why', help='Explain why a memory was retrieved')
+    p.add_argument('id', type=int, help='Memory ID')
+    p.add_argument('--db', help='Synapse AI Memory database path')
+
+    p = subparsers.add_parser('graph', help='Show concept neighborhood graph')
+    p.add_argument('concept', help='Concept name')
+    p.add_argument('--db', help='Synapse AI Memory database path')
+
+    p = subparsers.add_parser('conflicts', help='List unresolved contradictions')
+    p.add_argument('--db', help='Synapse AI Memory database path')
+
+    p = subparsers.add_parser('beliefs', help='Show current worldview beliefs')
     p.add_argument('--db', help='Synapse AI Memory database path')
 
     # ── Consolidate command (standalone) ──
@@ -675,6 +1123,10 @@ def main():
     # Standalone commands (no daemon needed)
     standalone = {
         'history': cmd_history,
+        'why': cmd_why,
+        'graph': cmd_graph,
+        'conflicts': cmd_conflicts,
+        'beliefs': cmd_beliefs,
         'timeline': cmd_timeline,
         'consolidate': cmd_consolidate,
         'export': cmd_export,
@@ -691,6 +1143,10 @@ def main():
 
     if args.command in standalone:
         standalone[args.command](args)
+        return
+
+    if args.command == 'stats' and getattr(args, 'db', None):
+        cmd_stats(args)
         return
 
     # Daemon-dependent commands

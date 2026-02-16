@@ -125,6 +125,8 @@ def _tool_schema_recall() -> Dict[str, Any]:
             "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 10},
             "memory_type": {"type": "string", "enum": sorted(MEMORY_TYPES), "description": "Optional type filter."},
             "explain": {"type": "boolean", "default": False, "description": "Include score breakdown."},
+            "show_disputes": {"type": "boolean", "default": False, "description": "Include unresolved contradiction disputes per memory."},
+            "exclude_conflicted": {"type": "boolean", "default": False, "description": "Filter out memories with unresolved contradictions."},
         },
         "required": ["query"],
     }
@@ -163,6 +165,40 @@ def _tool_schema_forget() -> Dict[str, Any]:
             "memory_id": {"type": "integer", "description": "Memory ID to delete."},
         },
         "required": ["memory_id"],
+    }
+
+
+def _tool_schema_forget_topic() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "topic": {"type": "string", "description": "Topic or concept to forget."},
+        },
+        "required": ["topic"],
+    }
+
+
+def _tool_schema_redact() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "memory_id": {"type": "integer", "description": "Memory ID to redact."},
+            "fields": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["memory_id"],
+    }
+
+
+def _tool_schema_gdpr_delete() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "user_id": {"type": "string", "description": "User tag prefix, e.g. user:<id>."},
+            "concept": {"type": "string", "description": "Concept text to delete memories for."},
+        },
     }
 
 
@@ -214,6 +250,21 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                 name="forget",
                 description="Delete a memory by ID.",
                 inputSchema=_tool_schema_forget(),
+            ),
+            types.Tool(
+                name="forget_topic",
+                description="Forget all memories related to a concept/topic.",
+                inputSchema=_tool_schema_forget_topic(),
+            ),
+            types.Tool(
+                name="redact",
+                description="Redact memory content while keeping metadata and graph links.",
+                inputSchema=_tool_schema_redact(),
+            ),
+            types.Tool(
+                name="gdpr_delete",
+                description="Delete memories by user ID or concept.",
+                inputSchema=_tool_schema_gdpr_delete(),
             ),
             types.Tool(
                 name="count",
@@ -359,7 +410,9 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
 
                 async with db_lock:
                     memories = syn.recall(context=query, limit=limit_i,
-                                          memory_type=memory_type, explain=do_explain)
+                                          memory_type=memory_type, explain=do_explain,
+                                          show_disputes=bool(args.get("show_disputes", False)),
+                                          exclude_conflicted=bool(args.get("exclude_conflicted", False)))
 
                 mem_dicts = []
                 for m in memories:
@@ -383,6 +436,60 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                     if deleted:
                         syn.flush()
                 payload = _ok_payload({"deleted": deleted, "memory_id": memory_id})
+
+            elif name == "forget_topic":
+                topic = args.get("topic", "")
+                if not isinstance(topic, str) or not topic.strip():
+                    raise ValueError("topic must be a non-empty string")
+
+                async with db_lock:
+                    result = syn.forget_topic(topic=topic.strip())
+                    if result.get("deleted_count", 0):
+                        syn.flush()
+                payload = _ok_payload(result)
+
+            elif name == "redact":
+                memory_id = _as_int(args.get("memory_id"), field="memory_id")
+                fields = args.get("fields", None)
+                if fields is not None and not isinstance(fields, list):
+                    raise ValueError("fields must be a list of strings if provided")
+
+                normalized_fields = None
+                if isinstance(fields, list):
+                    normalized_fields = []
+                    for field_name in fields:
+                        if not isinstance(field_name, str):
+                            raise ValueError("fields entries must be strings")
+                        field_name = field_name.strip()
+                        if not field_name:
+                            continue
+                        normalized_fields.append(field_name)
+                    if not normalized_fields:
+                        normalized_fields = None
+
+                async with db_lock:
+                    result = syn.redact(memory_id=memory_id, fields=normalized_fields)
+                    if result.get("redacted", False):
+                        syn.flush()
+                payload = _ok_payload(result)
+
+            elif name == "gdpr_delete":
+                user_id = args.get("user_id", None)
+                concept = args.get("concept", None)
+                if user_id is None and concept is None:
+                    raise ValueError("one of user_id or concept must be provided")
+                if user_id is not None and not isinstance(user_id, str):
+                    raise ValueError("user_id must be a string")
+                if concept is not None:
+                    if not isinstance(concept, str) or not concept.strip():
+                        raise ValueError("concept must be a non-empty string if provided")
+                    concept = concept.strip()
+
+                async with db_lock:
+                    result = syn.gdpr_delete(user_id=user_id, concept=concept)
+                    if result.get("deleted_count", 0):
+                        syn.flush()
+                payload = _ok_payload(result)
 
             elif name == "count":
                 async with db_lock:

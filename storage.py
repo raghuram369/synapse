@@ -194,7 +194,14 @@ class MemoryStore:
         elif op == 'update_memory':
             memory_id = data['id']
             if memory_id in self.memories:
-                self.memories[memory_id].update(data)
+                # Replace the dict rather than mutating in place so callers
+                # holding older references see the prior snapshot (helps tests
+                # and avoids surprising aliasing behavior).
+                current = self.memories[memory_id]
+                updated = dict(current)
+                updated.update(data)
+                self._normalize_memory(updated)
+                self.memories[memory_id] = updated
                 
         elif op == 'delete_memory':
             memory_id = data['id']
@@ -236,7 +243,11 @@ class MemoryStore:
     def update_memory(self, memory_id: int, updates: Dict[str, Any]):
         """Update an existing memory."""
         if memory_id in self.memories:
-            self.memories[memory_id].update(updates)
+            current = self.memories[memory_id]
+            updated = dict(current)
+            updated.update(updates)
+            self._normalize_memory(updated)
+            self.memories[memory_id] = updated
             
             # Log the operation  
             update_data = {'id': memory_id, **updates}

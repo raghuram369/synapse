@@ -106,7 +106,7 @@ class TestTripleExtraction(unittest.TestCase):
         self.assertEqual(normalize_entity("  The Dogs  "), "dog")
 
     def test_normalize_entity_alias(self):
-        self.assertEqual(normalize_entity("NYC"), "new york city")
+        self.assertEqual(normalize_entity("NYC"), "new york")
         self.assertIn("nyc", ENTITY_ALIAS_MAP)
 
     def test_normalize_entity_extension(self):

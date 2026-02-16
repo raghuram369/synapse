@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import List, Tuple
 
+from normalization import ENTITY_NORMALIZER
+
 
 CONCEPT_MAP = {
     # hardware
@@ -596,7 +598,14 @@ def extract_concepts(text: str) -> List[Tuple[str, str]]:
             for concept_name, category in _ALIASES_TO_CONCEPTS.get(alias, []):
                 concepts[(concept_name, category)] = concepts.get((concept_name, category), 0.0) + 1.0
 
-    return [(name, category) for (name, category), _ in concepts.items()]
+    merged: dict[tuple[str, str], float] = {}
+    for (name, category), score in concepts.items():
+        canonical_name = ENTITY_NORMALIZER.canonical(name, keep_proper_nouns=False)
+        if not canonical_name:
+            continue
+        merged[(canonical_name, category)] = merged.get((canonical_name, category), 0.0) + score
+
+    return [(name, category) for (name, category), _ in merged.items()]
 
 
 def expand_query(tokens: list[str]) -> list[str]:
