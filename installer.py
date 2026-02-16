@@ -496,16 +496,61 @@ def install_telegram(db_path: str) -> bool:
     os.makedirs(bot_dir, exist_ok=True)
     _write_telegram_files(bot_dir, token=token, ollama_model=ollama_model, openai_key=openai_key)
 
+    # Validate token
+    print("\nValidating bot token...")
+    try:
+        req = urllib.request.Request(f"https://api.telegram.org/bot{token}/getMe")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        if data.get("ok"):
+            bot_info = data.get("result", {})
+            bot_name = bot_info.get("first_name", "Unknown")
+            bot_username = bot_info.get("username", "unknown")
+            print(f"✅ Token valid! Bot: {bot_name} (@{bot_username})")
+        else:
+            print("❌ Invalid token. Please check and try again.")
+            return False
+    except Exception as e:
+        print(f"❌ Could not validate token: {e}")
+        print("Check your internet connection and token, then try again.")
+        return False
+
     print("\nStep 4: Install dependencies")
-    dep = subprocess.run([sys.executable, "-m", "pip", "install", "python-telegram-bot", "httpx"])
+    dep = subprocess.run([sys.executable, "-m", "pip", "install",
+                          "python-telegram-bot[job-queue]", "httpx", "synapse-ai-memory", "-q"])
     if dep.returncode:
         print("⚠️  Dependency installation returned an error. You may need to run:")
-        print("  python3 -m pip install python-telegram-bot httpx")
+        print('  python3 -m pip install "python-telegram-bot[job-queue]" httpx synapse-ai-memory')
 
     _write_text(_telegram_config_path(), "installed\n")
 
-    print("Setup complete! Start with: python3 ~/.synapse/telegram-bot/bot.py")
-    return dep.returncode == 0
+    print(f"\n✅ Synapse Telegram bot ready!")
+    print(f"   Bot: @{bot_username}")
+    print(f"   Data: {bot_dir}")
+
+    # Auto-start
+    print("\nStarting bot...")
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, os.path.join(bot_dir, "bot.py")],
+            cwd=bot_dir,
+            start_new_session=True,
+        )
+        import time as _time
+        _time.sleep(3)
+        if proc.poll() is None:
+            print(f"✅ Bot is running! (PID: {proc.pid})")
+            print(f"   Message @{bot_username} on Telegram to try it out.")
+            print(f"\n   To stop: kill {proc.pid}")
+            print(f"   To restart: python3 {bot_dir}/bot.py")
+        else:
+            print("⚠️  Bot exited unexpectedly. Check logs:")
+            print(f"   python3 {bot_dir}/bot.py")
+    except Exception as e:
+        print(f"⚠️  Could not auto-start: {e}")
+        print(f"   Start manually: python3 {bot_dir}/bot.py")
+
+    return True
 
 
 def uninstall_telegram() -> bool:
