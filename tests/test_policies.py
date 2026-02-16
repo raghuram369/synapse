@@ -130,7 +130,7 @@ class TestPolicyPresets(unittest.TestCase):
         self.s.policy("work")
         memory = self.s.remember("Sprint update for #ProjectHorizon and project:horizon", deduplicate=False)
         tags = self._metadata_tags(memory.id)
-        self.assertIn("project:atlas", tags)
+        self.assertIn("project:horizon", tags)
         self.assertIn("project:horizon", tags)
 
     def test_ephemeral_policy_keeps_pinned_and_prunes_unpinned(self):
