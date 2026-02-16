@@ -10,6 +10,7 @@ Usage::
 """
 
 from synapse import Memory, Synapse, MEMORY_TYPES, EDGE_TYPES
+from context_cards import CardDeck, ContextCard
 from exceptions import (
     SynapseAuthError,
     SynapseConnectionError,
@@ -29,4 +30,6 @@ __all__ = [
     "SynapseAuthError",
     "SynapseConnectionError",
     "SynapseValidationError",
+    "ContextCard",
+    "CardDeck",
 ]

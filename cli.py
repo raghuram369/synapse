@@ -9,10 +9,15 @@ from __future__ import annotations
 import argparse
 import datetime
 from collections import defaultdict
+import asyncio
+import glob
 import json
 import os
+import tempfile
 import sys
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse
 from typing import Any, Dict
 
 from client import SynapseClient, SynapseRequestError
@@ -68,6 +73,282 @@ def _dim(text: str) -> str:
 
 def _resolve_db_path(args) -> str:
     return args.db or ":memory:"
+
+
+APPLIANCE_DB_DEFAULT = "./synapse_store"
+APPLIANCE_BANNER = "Synapse AI Memory v0.6.0 — MCP server ready"
+
+
+def _resolve_appliance_db_path(args, default: str = APPLIANCE_DB_DEFAULT) -> str:
+    return (
+        getattr(args, "db", None)
+        or getattr(args, "data", None)
+        or default
+    )
+
+
+def _status_marker(level: str) -> str:
+    if level == "pass":
+        return _green("[PASS]")
+    if level == "warn":
+        return _yellow("[WARN]")
+    return _red("[FAIL]")
+
+
+def _report_status(level: str, label: str, detail: str | None = None):
+    marker = _status_marker(level)
+    suffix = f" — {detail}" if detail else ""
+    print(f"{marker} {label}{suffix}")
+
+
+def _collect_mcp_tools(db_path: str) -> list[Dict[str, Any]]:
+    from synapse import Synapse
+
+    try:
+        import mcp_server
+    except Exception as exc:
+        raise RuntimeError(
+            "MCP package is not available in this environment. "
+            "Install 'mcp' to run appliance commands."
+        ) from exc
+
+    syn = Synapse(db_path)
+    try:
+        server, _db_lock = mcp_server._build_server(syn=syn)
+        loop = asyncio.new_event_loop()
+        try:
+            tools = loop.run_until_complete(server.list_tools())
+        finally:
+            loop.close()
+    finally:
+        try:
+            syn.close()
+        finally:
+            # keep parity if close fails for any reason
+            pass
+        # avoid flake warnings if syn.close raises before join; explicit finally keeps scope clear
+
+    catalog: list[Dict[str, Any]] = []
+    for tool in tools:
+        catalog.append({
+            "name": tool.name,
+            "description": tool.description or "",
+            "inputSchema": getattr(tool, "inputSchema", {}),
+        })
+    return catalog
+
+
+def _format_tool_schema(schema: Any, prefix: str = "    ") -> str:
+    if not schema:
+        return f"{prefix}{{}}"
+    return "\n".join(f"{prefix}{line}" for line in json.dumps(schema, indent=2, sort_keys=True).splitlines())
+
+
+def _collect_store_snapshot(db_path: str) -> Dict[str, Any]:
+    from synapse import Synapse
+
+    syn = Synapse(db_path)
+    try:
+        contradictions = _collect_contradictions(syn)
+        hook = syn.sleep_runner.schedule_hook()
+        hot = syn.hot_concepts(k=5)
+    finally:
+        syn.close()
+
+    return {
+        "memory_count": syn.count(),
+        "concept_count": len(syn.concept_graph.concepts),
+        "edge_count": len(syn.store.edges),
+        "contradiction_count": len(contradictions),
+        "belief_count": len(syn.beliefs() or {}),
+        "last_sleep_at": hook.get("last_sleep_at"),
+        "top_hot_concepts": hot,
+        "active_memories": hook.get("active_memory_count"),
+        "store_path": db_path,
+    }
+
+
+def _scan_portable_exports(db_path: str) -> list[tuple[str, bool, str]]:
+    export_dir = os.path.dirname(os.path.abspath(db_path)) or "."
+    from portable import inspect_synapse
+
+    reports: list[tuple[str, bool, str]] = []
+    for path in sorted(glob.glob(os.path.join(export_dir, "*.synapse"))):
+        try:
+            info = inspect_synapse(path)
+            crc_ok = bool(info.get("crc_valid", False))
+            if crc_ok:
+                reports.append((path, True, "CRC valid"))
+            else:
+                reports.append((path, False, "CRC invalid"))
+        except Exception as exc:
+            reports.append((path, False, f"Unable to inspect: {exc}"))
+    return reports
+
+
+def _run_store_latency_probe(db_path: str) -> float:
+    tmpdir = tempfile.mkdtemp(prefix="synapse-doctor-")
+    probe_path = os.path.join(tmpdir, "probe_store")
+
+    from synapse import Synapse
+
+    s = Synapse(probe_path)
+    try:
+        start = time.perf_counter()
+        s.remember("Synapse MCP appliance health check", deduplicate=False)
+        s.recall("MCP appliance health check", limit=1)
+        end = time.perf_counter()
+    finally:
+        s.close()
+        try:
+            pass
+        finally:
+            # best effort cleanup for probe folder
+            for artifact in ("probe_store.log", "probe_store.snapshot"):
+                try:
+                    os.remove(os.path.join(tmpdir, artifact))
+                except OSError:
+                    pass
+            try:
+                os.rmdir(tmpdir)
+            except OSError:
+                pass
+
+    return (end - start) * 1000.0
+
+
+def _check_store_files(db_path: str) -> list[tuple[str, str, str]]:
+    checks: list[tuple[str, str, str]] = []
+    base_dir = os.path.dirname(os.path.abspath(db_path)) or "."
+    log_path = f"{db_path}.log"
+    snapshot_path = f"{db_path}.snapshot"
+
+    try:
+        os.makedirs(base_dir, exist_ok=True)
+        checks.append(("storage directory", "pass", f"{base_dir}"))
+    except OSError as exc:
+        checks.append(("storage directory", "fail", str(exc)))
+        return checks
+
+    for path in (log_path, snapshot_path):
+        try:
+            with open(path, "a", encoding="utf-8"):
+                pass
+            with open(path, "r", encoding="utf-8"):
+                pass
+            checks.append((path, "pass", "read/write"))
+        except OSError as exc:
+            checks.append((path, "fail", str(exc)))
+
+    try:
+        if os.path.exists(snapshot_path):
+            with open(snapshot_path, "r", encoding="utf-8") as fp:
+                json.load(fp)
+            checks.append(("snapshot json", "pass", "valid JSON"))
+        else:
+            checks.append(("snapshot json", "warn", "not found yet"))
+    except Exception as exc:
+        checks.append(("snapshot json", "fail", str(exc)))
+
+    return checks
+
+
+def _run_mcp_stdio_server(db_path: str):
+    import asyncio
+
+    try:
+        import mcp_server
+        from mcp.server.stdio import stdio_server
+        from synapse import Synapse
+    except Exception as exc:
+        print("Error: MCP package is required for stdio mode.", file=sys.stderr)
+        print(f"Details: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    syn = Synapse(db_path)
+    try:
+        server, _db_lock = mcp_server._build_server(syn=syn)
+
+        async def _run() -> None:
+            async with stdio_server() as streams:
+                read_stream, write_stream = streams
+                await server.run(read_stream, write_stream, server.create_initialization_options())
+
+        asyncio.run(_run())
+    finally:
+        syn.close()
+
+
+def _run_mcp_http_server(db_path: str, port: int):
+    tools = _collect_mcp_tools(db_path)
+
+    class _Handler(BaseHTTPRequestHandler):
+        server_version = "SynapseMCP/0.6.0"
+
+        def _respond_json(self, payload: Any, status: int = 200):
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        @staticmethod
+        def _json_ok(payload: Any) -> Dict[str, Any]:
+            return {"jsonrpc": "2.0", "result": payload}
+
+        @staticmethod
+        def _json_error(message: str, code: int = -32000) -> Dict[str, Any]:
+            return {"jsonrpc": "2.0", "error": {"code": code, "message": message}}
+
+        def do_GET(self):  # noqa: N802
+            path = urlparse(self.path).path
+            if path in {"/", "/tools", "/tools/list"}:
+                self._respond_json(self._json_ok({"tools": tools}))
+            else:
+                self._respond_json(self._json_error("Not found", -32601), status=404)
+
+        def do_POST(self):  # noqa: N802
+            path = urlparse(self.path).path
+            if path not in {"/", "/jsonrpc", "/rpc"}:
+                self._respond_json(self._json_error("Not found", -32601), status=404)
+                return
+
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = self.rfile.read(length).decode("utf-8")
+                request = json.loads(payload) if payload else {}
+            except Exception as exc:
+                self._respond_json(self._json_error(f"Invalid request: {exc}", -32700), status=400)
+                return
+
+            method = str(request.get("method", ""))
+            if method in {"tools/list", "list_tools"}:
+                self._respond_json(self._json_ok({"tools": tools}))
+                return
+            if method == "tools/call":
+                self._respond_json(self._json_error("Tool calls are not implemented in this HTTP shim."), status=501)
+                return
+            if method == "initialize":
+                self._respond_json(
+                    self._json_ok({
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {"tools": {"listChanged": False}},
+                        "serverInfo": {"name": "synapse-memory", "version": "0.6.0"},
+                    })
+                )
+                return
+
+            self._respond_json(self._json_error(f"Unsupported method: {method}", -32601))
+
+    server = ThreadingHTTPServer(("127.0.0.1", port), _Handler)
+    try:
+        print(f"Listening on 127.0.0.1:{port}/jsonrpc")
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("Shutting down HTTP server")
+    finally:
+        server.server_close()
 
 
 def _format_datetime(ts: float) -> str:
@@ -782,6 +1063,52 @@ def cmd_import(args):
 
 
 def cmd_inspect(args):
+    db_path = _resolve_appliance_db_path(args)
+    tools = _collect_mcp_tools(db_path)
+    snapshot = _collect_store_snapshot(db_path)
+
+    if args.json:
+        payload = {
+            "tools": tools,
+            "store": {
+                "memory_count": snapshot["memory_count"],
+                "concept_count": snapshot["concept_count"],
+                "edge_count": snapshot["edge_count"],
+                "belief_count": snapshot["belief_count"],
+                "contradictions": snapshot["contradiction_count"],
+                "last_sleep_at": snapshot["last_sleep_at"],
+                "top_hot_concepts": snapshot["top_hot_concepts"],
+            },
+            "store_path": db_path,
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    print(_bold("🧰 MCP tool catalog"))
+    for tool in tools:
+        print(f"- {tool['name']}: {tool['description']}")
+        print(_format_tool_schema(tool.get("inputSchema"), prefix="  "))
+
+    print(_bold("📦 Store summary"))
+    print(f"- Memories: {snapshot['memory_count']}")
+    print(f"- Concepts: {snapshot['concept_count']}")
+    print(f"- Edges: {snapshot['edge_count']}")
+    print(f"- Beliefs: {snapshot['belief_count']}")
+    print(f"- Contradictions: {snapshot['contradiction_count']}")
+    last_sleep = snapshot["last_sleep_at"]
+    if last_sleep is None:
+        print("- Last sleep: never")
+    else:
+        print(f"- Last sleep: {_format_datetime(last_sleep)}")
+    print("- Top 5 hot concepts:")
+    if snapshot["top_hot_concepts"]:
+        for name, score in snapshot["top_hot_concepts"]:
+            print(f"  - {name}: {score:.3f}")
+    else:
+        print("  - none")
+
+
+def cmd_inspect_export(args):
     from portable import inspect_synapse
     info = inspect_synapse(args.input)
     print(f"═══ {info['path']} ═══")
@@ -806,6 +1133,98 @@ def cmd_inspect(args):
         from datetime import datetime
         dt = datetime.fromtimestamp(info['exported_at'])
         print(f"  Exported:    {dt.isoformat()}")
+
+
+def cmd_doctor(args):
+    db_path = _resolve_appliance_db_path(args)
+
+    issues = 0
+    print(_bold("🩺 Synapse health check"))
+    print(f"  Store: {db_path}")
+
+    for label, status, detail in _check_store_files(db_path):
+        _report_status(status, label, detail)
+        if status != "pass":
+            issues += 1
+
+    try:
+        snapshot = _collect_store_snapshot(db_path)
+        _report_status(
+            "pass",
+            "Store counts",
+            (
+                f"memories={snapshot['memory_count']} "
+                f"concepts={snapshot['concept_count']} "
+                f"edges={snapshot['edge_count']} "
+                f"beliefs={snapshot['belief_count']} "
+                f"contradictions={snapshot['contradiction_count']}"
+            ),
+        )
+    except Exception as exc:
+        issues += 1
+        _report_status("fail", "Store counts", f"Unable to load store: {exc}")
+        snapshot = {
+            "memory_count": 0,
+            "concept_count": 0,
+            "edge_count": 0,
+            "belief_count": 0,
+            "contradiction_count": 0,
+            "last_sleep_at": None,
+            "top_hot_concepts": [],
+        }
+
+    exports = _scan_portable_exports(db_path)
+    if not exports:
+        _report_status("pass", "Portable CRC checks", "no exports found")
+    for path, crc_ok, detail in exports:
+        if crc_ok:
+            _report_status("pass", f"Portable: {path}", detail)
+        else:
+            issues += 1
+            _report_status("fail", f"Portable: {path}", detail)
+
+    try:
+        latency_ms = _run_store_latency_probe(db_path)
+        if latency_ms <= 500:
+            _report_status("pass", "Performance", f"remember+recall {latency_ms:.2f} ms")
+        else:
+            issues += 1
+            _report_status("warn", "Performance", f"remember+recall {latency_ms:.2f} ms")
+    except Exception as exc:
+        issues += 1
+        _report_status("fail", "Performance", str(exc))
+
+    if snapshot["contradiction_count"]:
+        issues += 1
+        _report_status("warn", "Unresolved contradictions", str(snapshot["contradiction_count"]))
+    else:
+        _report_status("pass", "Unresolved contradictions", "0")
+
+    if issues:
+        _report_status("fail", "Health status", f"{issues} issue(s)")
+        sys.exit(1)
+
+    print(_green("Health check complete"))
+
+
+def cmd_serve(args):
+    db_path = _resolve_appliance_db_path(args)
+    try:
+        tools = _collect_mcp_tools(db_path)
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    print(APPLIANCE_BANNER)
+    print(_bold("MCP tools:"))
+    for tool in tools:
+        print(f"- {tool['name']}: {tool['description']}")
+
+    if args.http:
+        print(f"HTTP JSON-RPC on localhost:{args.port}")
+        _run_mcp_http_server(db_path=db_path, port=args.port)
+    else:
+        _run_mcp_stdio_server(db_path=db_path)
 
 
 def cmd_merge(args):
@@ -858,9 +1277,241 @@ def cmd_diff(args):
             print(f"      B: {m['content_b']}")
 
 
+def cmd_pack(args):
+    from packs import (
+        BrainPack,
+        default_pack_output_path,
+        get_pack_directory,
+        list_pack_files,
+        parse_range_days,
+    )
+    from synapse import Synapse
+
+    db_path = args.db or args.data or ":memory:"
+    pack_dir = get_pack_directory(db_path=db_path, explicit=args.pack_dir)
+
+    if args.list:
+        files = list_pack_files(pack_dir)
+        if not files:
+            print("No brain packs found.")
+            return
+        print(_bold("🧠 Saved brain packs"))
+        for path in files:
+            try:
+                pack = BrainPack.load(path)
+            except Exception as exc:
+                print(f"- {os.path.basename(path)} | ⚠️  {exc}")
+                continue
+            print(
+                f"- {os.path.basename(path)} | topic: {pack.topic} | "
+                f"memories: {len(pack.memories)} | created: {_format_datetime(pack.created_at)}"
+            )
+        return
+
+    if args.diff:
+        pack_a = BrainPack.load(args.diff[0])
+        pack_b = BrainPack.load(args.diff[1])
+        report = pack_a.diff(pack_b)
+        print(report["markdown"])
+        return
+
+    if args.replay:
+        pack = BrainPack.load(args.replay)
+        s = Synapse(db_path)
+        try:
+            report = pack.replay(s)
+        finally:
+            s.close()
+        print(report["markdown"])
+        return
+
+    if args.topic is None:
+        print("❌ No pack action specified.")
+        return
+
+    range_days = parse_range_days(args.range)
+    s = Synapse(db_path)
+    try:
+        pack = BrainPack(topic=args.topic, range_days=range_days).build(s)
+        output = args.output or default_pack_output_path(
+            topic=args.topic,
+            db_path=db_path,
+            created_at=pack.created_at,
+            explicit_store=pack_dir,
+        )
+        if not output.lower().endswith(".brain"):
+            output = f"{output}.brain"
+        pack.save(output)
+    finally:
+        s.close()
+    print(f"✓ Saved brain pack: {output}")
+
+
+def cmd_card(args):
+    action = getattr(args, 'card_action', None)
+    if action == 'create':
+        cmd_card_create(args)
+        return
+    if action == 'show':
+        cmd_card_show(args)
+        return
+    if action == 'export':
+        cmd_card_export(args)
+        return
+    print("❌ Unknown card action")
+    sys.exit(1)
+
+
+def cmd_card_create(args):
+    from synapse import Synapse
+    db_path = _resolve_db_path(args)
+    s = Synapse(db_path)
+    try:
+        card = s.create_card(args.query, budget=args.budget)
+        print(card.to_markdown())
+        s.flush()
+    finally:
+        s.close()
+
+
+def cmd_card_show(args):
+    from synapse import Synapse
+    db_path = _resolve_db_path(args)
+    s = Synapse(db_path)
+    try:
+        card = s.cards.get(args.card_id)
+        if card is None:
+            print(f"Card not found: {args.card_id}")
+            sys.exit(1)
+        print(card.to_markdown())
+    finally:
+        s.close()
+
+
+def cmd_card_export(args):
+    from synapse import Synapse
+    db_path = _resolve_db_path(args)
+    s = Synapse(db_path)
+    try:
+        s.cards.export(args.path)
+        print(f"✓ Exported cards to {args.path}")
+    finally:
+        s.close()
+
+
+def cmd_checkpoint(args):
+    action = getattr(args, 'checkpoint_action', None)
+    if action == 'create':
+        cmd_checkpoint_create(args)
+        return
+    if action == 'list':
+        cmd_checkpoint_list(args)
+        return
+    if action == 'diff':
+        cmd_checkpoint_diff(args)
+        return
+    if action == 'restore':
+        cmd_checkpoint_restore(args)
+        return
+    if action == 'delete':
+        cmd_checkpoint_delete(args)
+        return
+    print("❌ Unknown checkpoint action")
+    sys.exit(1)
+
+
+def cmd_checkpoint_create(args):
+    from synapse import Synapse
+    s = Synapse(_resolve_db_path(args))
+    try:
+        cp = s.checkpoint(args.name, desc=getattr(args, 'desc', ''))
+        print(f"✅ Created checkpoint '{cp.name}'")
+        print(f"🧭 Description: {cp.description or '(none)'}")
+        print(f"📦 Snapshot: {cp.snapshot_path}")
+        print(f"🔐 Checksum: {cp.checksum}")
+        print(f"🧠 Memories: {cp.stats.get('memory_count', 0)}")
+        print(f"🔗 Concepts: {cp.stats.get('concept_count', 0)}")
+    finally:
+        s.close()
+
+
+def cmd_checkpoint_list(args):
+    from synapse import Synapse
+    s = Synapse(_resolve_db_path(args))
+    try:
+        checkpoints = s.checkpoints.list()
+    finally:
+        s.close()
+
+    if not checkpoints:
+        print("⚪ No checkpoints found")
+        return
+
+    print("🗂  Checkpoints:")
+    for item in checkpoints:
+        print(f"- {item.name} ({_format_datetime(item.created_at)})")
+        print(f"  desc: {item.description or '(none)'}")
+        print(f"  memories: {item.stats.get('memory_count', 0)}")
+        print(f"  checksum: {item.checksum}")
+
+
+def cmd_checkpoint_diff(args):
+    from synapse import Synapse
+    s = Synapse(_resolve_db_path(args))
+    try:
+        payload = s.checkpoints.diff(args.a, args.b)
+    finally:
+        s.close()
+
+    print(f"🔎 Diff {payload['checkpoint_a']} -> {payload['checkpoint_b']}")
+    print(f"  memories_added: {len(payload['memories_added'])}")
+    print(f"  memories_removed: {len(payload['memories_removed'])}")
+    print(f"  beliefs_changed: {len(payload['beliefs_changed'])}")
+    print(f"  contradictions_introduced: {len(payload['contradictions_introduced'])}")
+    print(f"  contradictions_resolved: {len(payload['contradictions_resolved'])}")
+    print(f"  concepts_added: {len(payload['concepts_added'])}")
+    print(f"  concepts_removed: {len(payload['concepts_removed'])}")
+    if payload["beliefs_changed"]:
+        print("  sample belief delta:")
+        for item in payload["beliefs_changed"][:5]:
+            print(f"    {item['fact']}: {item['old_value']} -> {item['new_value']}")
+
+
+def cmd_checkpoint_restore(args):
+    from synapse import Synapse
+    if not args.confirm:
+        print("⚠️  Restoring a checkpoint is destructive. Use --confirm to proceed.")
+        return
+
+    s = Synapse(_resolve_db_path(args))
+    try:
+        report = s.checkpoints.restore(args.name)
+    finally:
+        s.close()
+
+    print(f"♻️  Restored checkpoint '{report['checkpoint']}'")
+    print(f"🧠 Memories restored: {report.get('memories_restored', 0)}")
+    print(f"🔗 Concepts restored: {report.get('concepts_restored', 0)}")
+    print(f"⚡ Beliefs restored: {report.get('beliefs_restored', 0)}")
+
+
+def cmd_checkpoint_delete(args):
+    from synapse import Synapse
+    s = Synapse(_resolve_db_path(args))
+    try:
+        deleted = s.checkpoints.delete(args.name)
+    finally:
+        s.close()
+
+    if deleted:
+        print(f"✅ Deleted checkpoint '{args.name}'")
+    else:
+        print(f"⚠️  Checkpoint '{args.name}' not found")
+
+
 # ─── Federation commands (standalone) ────────────────────────────────────────
 
-def cmd_serve(args):
+def cmd_serve_federation(args):
     from federation.node import SynapseNode
     loopback_hosts = {"127.0.0.1", "localhost", "::1"}
     host = args.host
@@ -1072,7 +1723,7 @@ def main():
     p.add_argument('--no-dedup', action='store_true')
     p.add_argument('--threshold', type=float, default=0.85)
 
-    p = subparsers.add_parser('inspect', help='Inspect .synapse file')
+    p = subparsers.add_parser('inspect-export', help='Inspect .synapse file')
     p.add_argument('input', help='.synapse file path')
 
     p = subparsers.add_parser('merge', help='Merge multiple .synapse files')
@@ -1086,8 +1737,78 @@ def main():
     p.add_argument('file_b')
     p.add_argument('--threshold', type=float, default=0.85)
 
+    p = subparsers.add_parser('pack', help='Create and compare topic brain packs')
+    p_mode = p.add_mutually_exclusive_group(required=True)
+    p_mode.add_argument('--topic', help='Build a brain pack for this topic')
+    p_mode.add_argument('--replay', help='Replay a .brain file against current Synapse')
+    p_mode.add_argument('--diff', nargs=2, metavar=('FILE1', 'FILE2'), help='Compare two .brain files')
+    p_mode.add_argument('--list', action='store_true', help='List saved brain packs')
+    p.add_argument('--range', default='30d', help='History window for build mode (e.g. 30d, 2w, 90)')
+    p.add_argument('--output', help='Output .brain file for pack mode')
+    p.add_argument('--pack-dir', help='Directory for storing and listing packs')
+    p.add_argument('--db', help='Synapse database path')
+
+    # ── Context card commands ─────────────────────────────────────────────
+    p = subparsers.add_parser('card', help='Create and manage context cards')
+    card_sub = p.add_subparsers(dest='card_action', help='Card actions')
+
+    p_create = card_sub.add_parser('create', help='Create a context card from a query')
+    p_create.add_argument('query')
+    p_create.add_argument('--budget', type=int, default=2000)
+    p_create.add_argument('--db', help='Synapse AI Memory database path')
+    p_create.set_defaults(card_action='create')
+
+    p_show = card_sub.add_parser('show', help='Show a stored card by id')
+    p_show.add_argument('card_id')
+    p_show.add_argument('--db', help='Synapse AI Memory database path')
+    p_show.set_defaults(card_action='show')
+
+    p_export = card_sub.add_parser('export', help='Export card deck to file')
+    p_export.add_argument('path')
+    p_export.add_argument('--db', help='Synapse AI Memory database path')
+    p_export.set_defaults(card_action='export')
+
+    p_checkpoint = subparsers.add_parser('checkpoint', help='Create and manage checkpoints')
+    p_checkpoint.add_argument('--db', help='Synapse AI Memory database path')
+    cp_sub = p_checkpoint.add_subparsers(dest='checkpoint_action', help='Checkpoint actions')
+
+    cp_create = cp_sub.add_parser('create', help='Create a checkpoint')
+    cp_create.add_argument('name')
+    cp_create.add_argument('--desc', default='')
+    cp_create.set_defaults(checkpoint_action='create')
+
+    cp_list = cp_sub.add_parser('list', help='List checkpoints')
+    cp_list.set_defaults(checkpoint_action='list')
+
+    cp_diff = cp_sub.add_parser('diff', help='Compare two checkpoints')
+    cp_diff.add_argument('a')
+    cp_diff.add_argument('b')
+    cp_diff.set_defaults(checkpoint_action='diff')
+
+    cp_restore = cp_sub.add_parser('restore', help='Restore to checkpoint state')
+    cp_restore.add_argument('name')
+    cp_restore.add_argument('--confirm', action='store_true', help='Skip confirmation and apply restore')
+    cp_restore.set_defaults(checkpoint_action='restore')
+
+    cp_delete = cp_sub.add_parser('delete', help='Delete a checkpoint')
+    cp_delete.add_argument('name')
+    cp_delete.set_defaults(checkpoint_action='delete')
+
+    # ── Appliance commands ──
+    p = subparsers.add_parser('inspect', help='Inspect MCP tool catalog and store')
+    p.add_argument('--db', default=APPLIANCE_DB_DEFAULT, help='MCP storage path')
+    p.add_argument('--json', action='store_true', help='Output JSON summary')
+
+    p = subparsers.add_parser('doctor', help='Run MCP appliance health checks')
+    p.add_argument('--db', default=APPLIANCE_DB_DEFAULT, help='MCP storage path')
+
+    p = subparsers.add_parser('serve', help='Start MCP memory appliance')
+    p.add_argument('--db', default=APPLIANCE_DB_DEFAULT, help='Storage path')
+    p.add_argument('--port', type=int, default=8765, help='HTTP JSON-RPC port (requires --http)')
+    p.add_argument('--http', action='store_true', help='Run as HTTP server on localhost')
+
     # ── Federation commands ──
-    p = subparsers.add_parser('serve', help='Start federation server')
+    p = subparsers.add_parser('serve-federation', help='Start federation server')
     p.add_argument('--fed-port', '-p', type=int, default=9470, dest='port')
     p.add_argument('--fed-host', default='127.0.0.1', dest='host', help='Bind address (default: 127.0.0.1)')
     p.add_argument(
@@ -1132,9 +1853,15 @@ def main():
         'export': cmd_export,
         'import': cmd_import,
         'inspect': cmd_inspect,
+        'inspect-export': cmd_inspect_export,
+        'checkpoint': cmd_checkpoint,
         'merge': cmd_merge,
         'diff': cmd_diff,
+        'pack': cmd_pack,
+        'doctor': cmd_doctor,
         'serve': cmd_serve,
+        'serve-federation': cmd_serve_federation,
+        'card': cmd_card,
         'push': cmd_push_fed,
         'pull': cmd_pull_fed,
         'sync': cmd_sync_fed,

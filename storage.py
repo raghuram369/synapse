@@ -131,6 +131,10 @@ class MemoryStore:
     def __init__(self, path: str):
         self.path = path
         self.in_memory = path == ":memory:"
+        if self.in_memory:
+            self.base_path = ":memory:"
+        else:
+            self.base_path = os.path.dirname(os.path.abspath(path))
         
         if not self.in_memory:
             self.log_path = path + ".log"
@@ -149,6 +153,7 @@ class MemoryStore:
         self.edges: Dict[int, Dict[str, Any]] = {}
         self.episodes: Dict[int, Dict[str, Any]] = {}
         self.concepts: Dict[str, Dict[str, Any]] = {}
+        self.cards: Dict[str, Dict[str, Any]] = {}
         
         self._load_from_storage()
     
@@ -161,6 +166,7 @@ class MemoryStore:
             self.edges = snapshot_data.get('edges', {})
             self.episodes = snapshot_data.get('episodes', {})
             self.concepts = snapshot_data.get('concepts', {})
+            self.cards = snapshot_data.get('cards', {})
             self.next_memory_id = snapshot_data.get('next_memory_id', 1)
             self.next_episode_id = snapshot_data.get('next_episode_id', 1)
             
@@ -225,6 +231,25 @@ class MemoryStore:
         elif op == 'insert_concept':
             concept_name = data['name']
             self.concepts[concept_name] = data
+
+        elif op == 'insert_card':
+            card_id = str(data.get('card_id'))
+            if card_id:
+                self.cards[card_id] = data
+
+        elif op == 'update_card':
+            card_id = str(data.get('card_id', ''))
+            if not card_id or card_id not in self.cards:
+                return
+            current = self.cards.get(card_id, {})
+            updated = dict(current)
+            updated.update(data)
+            self.cards[card_id] = updated
+
+        elif op == 'delete_card':
+            card_id = str(data.get('card_id', ''))
+            if card_id in self.cards:
+                del self.cards[card_id]
     
     def insert_memory(self, memory_data: Dict[str, Any]) -> int:
         """Insert a new memory and return its ID."""
@@ -296,8 +321,40 @@ class MemoryStore:
         """Insert a new concept."""
         concept_name = concept_data['name']
         self.concepts[concept_name] = concept_data
-        
+
         self.log.append('insert_concept', concept_data)
+
+    def insert_card(self, card_data: Dict[str, Any]):
+        """Insert or replace a serialized ContextCard."""
+        card_id = str(card_data.get('card_id'))
+        if not card_id:
+            raise ValueError("card_id is required")
+        payload = dict(card_data)
+        payload['card_id'] = card_id
+        self.cards[card_id] = payload
+        self.log.append('insert_card', payload)
+
+    def update_card(self, card_data: Dict[str, Any]):
+        """Update an existing card by id."""
+        card_id = str(card_data.get('card_id', ''))
+        if not card_id:
+            raise ValueError("card_id is required")
+        current = self.cards.get(card_id)
+        if current is None:
+            self.insert_card(card_data)
+            return
+        payload = dict(current)
+        payload.update(card_data)
+        payload['card_id'] = card_id
+        self.cards[card_id] = payload
+        self.log.append('update_card', payload)
+
+    def delete_card(self, card_id: str):
+        """Delete a stored card by id."""
+        card_key = str(card_id)
+        if card_key in self.cards:
+            del self.cards[card_key]
+            self.log.append('delete_card', {'card_id': card_key})
     
     def flush(self):
         """Force flush log to disk."""
@@ -310,6 +367,7 @@ class MemoryStore:
             'edges': {str(k): v for k, v in self.edges.items()},
             'episodes': {str(k): v for k, v in self.episodes.items()},
             'concepts': self.concepts,
+            'cards': self.cards,
             'next_memory_id': self.next_memory_id,
             'next_episode_id': self.next_episode_id
         }

@@ -73,6 +73,7 @@ py-modules = [
     "temporal",
     "graph_retrieval",
     "context_pack",
+    "checkpoints",
     "communities",
     "forgetting",
     "evidence",

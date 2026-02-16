@@ -799,6 +799,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         default="~/.synapse",
         help="Directory to store Synapse AI Memory files (default: ~/.synapse).",
     )
+    parser.add_argument(
+        "--mode",
+        choices=["full", "appliance"],
+        default="appliance",
+        help="Tool surface to expose: full (21 tools) or appliance (8 tools).",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -808,7 +814,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
 
     try:
-        asyncio.run(_run_server(data_dir=args.data_dir))
+        if args.mode == "full":
+            asyncio.run(_run_server(data_dir=args.data_dir))
+        else:
+            from mcp_appliance import _run_server as _run_appliance_server
+
+            asyncio.run(_run_appliance_server(data_dir=args.data_dir))
     except KeyboardInterrupt:
         return 0
     except Exception:

@@ -441,7 +441,7 @@ class ContextCompiler:
             summaries.append(f"{label}: {'; '.join(uniq[:4])}")
 
         if loose_facts:
-            summaries.append("Observed: " + "; ".join(dict.fromkeys(loose_facts)[:4]))
+            summaries.append("Observed: " + "; ".join(list(dict.fromkeys(loose_facts))[:4]))
 
         if not summaries:
             return ["No stable summaries were generated from retrieved memories."]

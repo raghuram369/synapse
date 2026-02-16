@@ -31,6 +31,7 @@ from itertools import combinations
 import time
 from dataclasses import dataclass, field
 from context_pack import ContextCompiler, ContextPack
+from context_cards import CardDeck, ContextCard
 from typing import Any, Dict, List, Optional, Set
 from communities import Community, CommunityDetector
 
@@ -47,6 +48,7 @@ from exceptions import SynapseValidationError
 from extractor import extract_facts
 from graph_retrieval import GraphRetriever
 from triples import TripleIndex, extract_triples
+from checkpoints import Checkpoint, CheckpointManager
 from indexes import (
     ConceptGraph,
     EdgeGraph,
@@ -145,6 +147,7 @@ class Synapse:
         
         # Initialize storage
         self.store = MemoryStore(path)
+        self._store = self.store
         
         # Initialize indexes
         self.inverted_index = InvertedIndex()
@@ -185,6 +188,30 @@ class Synapse:
 
         # Build indexes from stored data
         self._rebuild_indexes()
+
+        # Checkpoint support
+        self.checkpoints = CheckpointManager(self)
+
+        # Persistent context card collection
+        self.cards = CardDeck(cards=getattr(self.store, "cards", {}), synapse_instance=self)
+
+    def _reload_from_checkpoint_state(self):
+        """Reload all in-memory indexes and trackers from persisted storage."""
+        self.store.close()
+        self.store = MemoryStore(self.path)
+        self._store = self.store
+
+        self.inverted_index = InvertedIndex()
+        self.concept_graph = ConceptGraph()
+        self.edge_graph = EdgeGraph()
+        self.temporal_index = TemporalIndex()
+        self.episode_index = EpisodeIndex()
+        self.triple_index = TripleIndex()
+        self.contradiction_detector = ContradictionDetector()
+        self.belief_tracker = BeliefTracker(contradiction_detector=self.contradiction_detector)
+
+        self._rebuild_indexes()
+        self.cards = CardDeck(cards=getattr(self.store, "cards", {}), synapse_instance=self)
     
     def _rebuild_indexes(self):
         """Rebuild all indexes from stored data."""
@@ -1092,6 +1119,12 @@ class Synapse:
             budget=budget,
             policy=policy,
         )
+
+    def create_card(self, query: str, budget: int = 2000, policy: str = "balanced") -> ContextCard:
+        """Create and store a replayable ContextCard for a query."""
+        card = ContextCard(self.compile_context(query=query, budget=budget, policy=policy))
+        self.cards.add(card)
+        return card
     
     def _memory_data_to_object(self, memory_data: Dict) -> Memory:
         """Convert stored memory data to Memory object."""
@@ -1369,9 +1402,15 @@ class Synapse:
 
     def sleep(self, verbose: bool = False) -> SleepReport:
         """Run sleep maintenance and refresh communities."""
+        if self.checkpoints is not None:
+            self.checkpoints.checkpoint_before_sleep()
         result = self.sleep_runner.sleep(verbose=verbose)
         self._refresh_communities(force=True)
         return result
+
+    def checkpoint(self, name: str, desc: str = '') -> Checkpoint:
+        """Create a named checkpoint from current memory state."""
+        return self.checkpoints.create(name=name, description=desc)
     
     def forget(self, memory_id: int) -> bool:
         """Remove a memory completely."""
@@ -1828,7 +1867,17 @@ class Synapse:
         """Close the database."""
         self.flush()
         self.store.close()
-    
+
+    def command(self, text: str) -> str:
+        """Execute a /mem command and return a human-readable response."""
+        parser = getattr(self, "_command_parser", None)
+        if parser is None:
+            from command_dsl import MemoryCommandParser
+
+            parser = MemoryCommandParser(self)
+            self._command_parser = parser
+        return parser.parse_and_execute(text)
+
     def snapshot(self):
         """Create compacted snapshot."""
         self.store.create_snapshot()
