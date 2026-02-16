@@ -26,6 +26,7 @@ from pathlib import Path
 from client import SynapseClient, SynapseRequestError
 from exceptions import SynapseConnectionError
 from demo_runner import DemoRunner
+from doctor import run_doctor
 
 
 # ─── Formatting helpers ──────────────────────────────────────────────────────
@@ -2082,14 +2083,34 @@ def cmd_demo(args):
 
 
 def cmd_uninstall(args):
-    from installer import uninstall_claude, uninstall_openclaw, uninstall_nanoclaw, uninstall_all
+    from installer import (
+        uninstall_claude,
+        uninstall_cursor,
+        uninstall_windsurf,
+        uninstall_continue,
+        uninstall_openclaw,
+        uninstall_nanoclaw,
+        uninstall_telegram,
+        uninstall_ollama,
+        uninstall_all,
+    )
     target = args.target
     if target == "claude":
         uninstall_claude()
+    elif target == "cursor":
+        uninstall_cursor()
+    elif target == "windsurf":
+        uninstall_windsurf()
+    elif target == "continue":
+        uninstall_continue()
     elif target == "openclaw":
         uninstall_openclaw()
     elif target == "nanoclaw":
         uninstall_nanoclaw()
+    elif target == "telegram":
+        uninstall_telegram()
+    elif target == "ollama":
+        uninstall_ollama()
     elif target == "all":
         uninstall_all()
 
@@ -3157,8 +3178,8 @@ def main():
     p.add_argument('--port', type=int, default=9471, help='Local inspector port')
     p.add_argument('--db', help='Synapse database path')
 
-    p = subparsers.add_parser('doctor', help='Run MCP appliance health checks')
-    p.add_argument('--db', default=APPLIANCE_DB_DEFAULT, help='MCP storage path')
+    p = subparsers.add_parser('doctor', help='Check Synapse health and client integrations')
+    p.add_argument('--db', help='Memory store path (default: ~/.synapse)')
     p.add_argument('--json', action='store_true', help='Machine-readable JSON output')
 
     p = subparsers.add_parser('serve', help='Start MCP memory appliance')
@@ -3212,7 +3233,7 @@ def main():
     p.add_argument('peer', help='Peer URL to query')
 
     p = subparsers.add_parser('install', help='Install Synapse client integrations')
-    p.add_argument('target', nargs='?', help='Install target (claude, openclaw, nanoclaw, all)')
+    p.add_argument('target', nargs='?', help='Install target (claude, cursor, windsurf, continue, openclaw, nanoclaw, telegram, ollama, all)')
     p.add_argument('--db', default=APPLIANCE_DB_DEFAULT, help='Synapse database path')
     p.add_argument('--list', action='store_true', help='Show available install targets')
     p.add_argument('--dry-run', action='store_true', help='Preview changes without applying')
@@ -3223,7 +3244,7 @@ def main():
 
     # ── Uninstall command ──
     p = subparsers.add_parser('uninstall', help='Remove Synapse client integrations')
-    p.add_argument('target', choices=['claude', 'openclaw', 'nanoclaw', 'all'], help='Uninstall target')
+    p.add_argument('target', choices=['claude', 'cursor', 'windsurf', 'continue', 'openclaw', 'nanoclaw', 'telegram', 'ollama', 'all'], help='Uninstall target')
 
     # ── Service command ──
     p_service = subparsers.add_parser('service', help='Manage autostart service')
@@ -3333,7 +3354,7 @@ def main():
         'diff': cmd_diff,
         'pack': cmd_pack,
         'install': cmd_install,
-        'doctor': cmd_doctor_enhanced,
+        'doctor': run_doctor,
         'start': cmd_start,
         'import-wizard': cmd_import_wizard,
         'up': cmd_up,

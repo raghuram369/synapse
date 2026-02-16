@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "synapse-ai-memory"
-version = "0.11.1"
+version = "0.12.0"
 description = "A neuroscience-inspired memory engine for AI agents featuring private vaults, smart inbox review, and natural-language forgetting. Portable, federated, and zero-dependency."
 authors = [{name = "Raghuram Parvataneni"}]
 readme = "README.md"
@@ -105,6 +105,7 @@ py-modules = [
     "vault_manager",
     "memory_inbox",
     "natural_forget",
+    "doctor",
 ]
 packages = [
     "federation",
