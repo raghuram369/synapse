@@ -924,6 +924,15 @@ def cmd_shutdown(args, client: SynapseClient):
 
 # ─── Portable Format commands (standalone, no daemon needed) ─────────────────
 
+def cmd_bench(args):
+    from bench.consumer_bench import main as bench_main
+    bench_main(
+        scenario=getattr(args, 'scenario', None),
+        output=getattr(args, 'output', None),
+        fmt=getattr(args, 'bench_format', 'both'),
+    )
+
+
 def cmd_history(args):
     from synapse import Synapse
     db_path = args.db or ":memory:"
@@ -2888,6 +2897,13 @@ def main():
     p = subparsers.add_parser('verify', help='Verify a signed file')
     p.add_argument('file', help='File to verify')
 
+    p = subparsers.add_parser('bench', help='Run consumer-facing benchmark suite')
+    p.add_argument('--scenario', choices=['recall', 'timetravel', 'contradictions'],
+                   help='Run a single scenario')
+    p.add_argument('--output', help='Output directory for artifacts')
+    p.add_argument('--format', dest='bench_format', choices=['md', 'json', 'both'],
+                   default='both', help='Output format')
+
     args = parser.parse_args()
 
     if not args.command:
@@ -2896,6 +2912,7 @@ def main():
 
     # Standalone commands (no daemon needed)
     standalone = {
+        'bench': cmd_bench,
         'history': cmd_history,
         'why': cmd_why,
         'graph': cmd_graph,

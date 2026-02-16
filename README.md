@@ -6,7 +6,7 @@
 pip install synapse-ai-memory
 ```
 
-![Version](https://img.shields.io/badge/version-0.9.0-blue) ![Tests](https://img.shields.io/badge/tests-406%20passing-brightgreen) ![Cloud Calls](https://img.shields.io/badge/cloud%20calls-0-green) ![Speed](https://img.shields.io/badge/recall-fast-lightgrey)
+![Version](https://img.shields.io/badge/version-0.9.0-blue) ![Tests](https://img.shields.io/badge/tests-420%20passing-brightgreen) ![Cloud Calls](https://img.shields.io/badge/cloud%20calls-0-green) ![Speed](https://img.shields.io/badge/recall-fast-lightgrey)
 
 ---
 
@@ -391,6 +391,20 @@ synapse inspect --web --db ~/.synapse          # local web dashboard
 
 ---
 
+## Synapse Recall Challenge
+
+![Benchmark](assets/bench.gif)
+
+```bash
+synapse bench                                    # run all 3 scenarios
+synapse bench --scenario recall                  # just one
+synapse bench --output ./my-results --format md  # custom output
+```
+
+One command → shareable proof. Outputs `report.md`, `transcript.md`, and `results.json`.
+
+---
+
 ## Benchmarks
 
 ```
@@ -521,7 +535,7 @@ Multiple indexes. One fused result. No LLM in the loop.
 ## Quick Links
 
 - 📦 PyPI: `synapse-ai-memory`
-- 🧪 Tests: `tests/` (406 tests)
+- 🧪 Tests: `tests/` (420 tests)
 - 🔌 Integrations: `integrations/`
 - 🧰 Examples: `examples/`
 - 📈 Benchmarks: `bench/`
