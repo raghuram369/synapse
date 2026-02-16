@@ -196,6 +196,7 @@ def _tool_schema_remember() -> Dict[str, Any]:
                 "description": "Optional group/principal IDs for shared memories.",
             },
             "sensitive": {"type": "boolean", "default": False, "description": "Hard privacy flag — sensitive memories are never returned for non-private scope."},
+            "user_id": {"type": "string", "description": "Optional user id for vault auto-routing."},
         },
         "required": ["content"],
     }
@@ -218,10 +219,109 @@ def _tool_schema_recall() -> Dict[str, Any]:
                 "items": {"type": "string"},
                 "description": "Optional caller group/principal IDs for shared scope filtering.",
             },
+            "user_id": {"type": "string", "description": "Optional user id for vault auto-routing."},
         },
         "required": ["query"],
     }
 
+
+
+def _tool_schema_vault_list() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {},
+    }
+
+
+def _tool_schema_vault_create() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "vault_id": {"type": "string", "description": "Vault identifier to create."},
+            "user_id": {"type": "string", "description": "Optional user id to associate with vault."},
+        },
+        "required": ["vault_id"],
+    }
+
+
+def _tool_schema_vault_switch() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "vault_id": {"type": "string", "description": "Vault identifier to switch to."},
+        },
+        "required": ["vault_id"],
+    }
+
+
+def _tool_schema_inbox_list() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 20},
+        },
+    }
+
+
+def _tool_schema_inbox_approve() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "item_id": {"type": "string", "description": "Pending inbox item ID to approve."},
+        },
+        "required": ["item_id"],
+    }
+
+
+def _tool_schema_inbox_reject() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "item_id": {"type": "string", "description": "Pending inbox item ID to reject."},
+        },
+        "required": ["item_id"],
+    }
+
+
+def _tool_schema_inbox_redact() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "item_id": {"type": "string", "description": "Pending inbox item ID to redact and approve."},
+            "redacted_content": {"type": "string", "description": "Replacement redacted memory content."},
+        },
+        "required": ["item_id", "redacted_content"],
+    }
+
+
+def _tool_schema_inbox_pin() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "item_id": {"type": "string", "description": "Pending inbox item ID to pin and approve."},
+        },
+        "required": ["item_id"],
+    }
+
+
+def _tool_schema_natural_forget() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "command": {"type": "string", "description": "Natural language forget command."},
+            "dry_run": {"type": "boolean", "default": False, "description": "Preview deletions only."},
+        },
+        "required": ["command"],
+    }
 
 def _tool_schema_list() -> Dict[str, Any]:
     return {
@@ -425,6 +525,11 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
     server = Server("synapse-memory")
     db_lock = asyncio.Lock()
     egress_guard = EgressGuard(sensitivity=os.environ.get("SYNAPSE_EGRESS_SENSITIVITY", "standard"))
+    active_state = {"syn": syn}
+    vault_manager = getattr(syn, "_vault_manager", None)
+
+    def _active_syn() -> Synapse:
+        return active_state["syn"]
 
     @server.list_tools()
     async def list_tools() -> List[types.Tool]:
@@ -438,6 +543,51 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                 name="recall",
                 description="Recall relevant memories from Synapse using the query as context.",
                 inputSchema=_tool_schema_recall(),
+            ),
+            types.Tool(
+                name="vault_list",
+                description="List all vaults.",
+                inputSchema=_tool_schema_vault_list(),
+            ),
+            types.Tool(
+                name="vault_create",
+                description="Create a vault.",
+                inputSchema=_tool_schema_vault_create(),
+            ),
+            types.Tool(
+                name="vault_switch",
+                description="Switch active vault.",
+                inputSchema=_tool_schema_vault_switch(),
+            ),
+            types.Tool(
+                name="inbox_list",
+                description="List pending inbox memories.",
+                inputSchema=_tool_schema_inbox_list(),
+            ),
+            types.Tool(
+                name="inbox_approve",
+                description="Approve a pending memory item from inbox.",
+                inputSchema=_tool_schema_inbox_approve(),
+            ),
+            types.Tool(
+                name="inbox_reject",
+                description="Reject a pending memory item from inbox.",
+                inputSchema=_tool_schema_inbox_reject(),
+            ),
+            types.Tool(
+                name="inbox_redact",
+                description="Redact and approve a pending memory item from inbox.",
+                inputSchema=_tool_schema_inbox_redact(),
+            ),
+            types.Tool(
+                name="inbox_pin",
+                description="Pin and approve a pending memory item from inbox.",
+                inputSchema=_tool_schema_inbox_pin(),
+            ),
+            types.Tool(
+                name="natural_forget",
+                description="Forget memories using a natural language command.",
+                inputSchema=_tool_schema_natural_forget(),
             ),
             types.Tool(
                 name="forget",
@@ -614,6 +764,7 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
             return _is_scope_visible(_stored_scope(memory_data.get("scope")), requested_scope)
 
         try:
+            syn = _active_syn()
             if name == "remember":
                 content = args.get("content", "")
                 if not isinstance(content, str):
@@ -641,9 +792,12 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                 scope = _normalize_scope(args.get("scope", "private"))
                 shared_with = _normalize_string_list(args.get("shared_with", None), field="shared_with")
                 sensitive = bool(args.get("sensitive", False))
+                user_id = args.get("user_id", None)
+                if user_id is not None and not isinstance(user_id, str):
+                    raise ValueError("user_id must be a string")
 
                 async with db_lock:
-                    mem = syn.remember(
+                    mem = _active_syn().remember(
                         content=content,
                         memory_type=memory_type,
                         metadata=metadata,
@@ -652,8 +806,9 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                         scope=scope,
                         shared_with=shared_with,
                         sensitive=sensitive,
+                        user_id=user_id,
                     )
-                    syn.flush()
+                    _active_syn().flush()
 
                 payload = _ok_payload({"memory": _memory_to_dict(mem)})
 
@@ -679,13 +834,18 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                 caller_groups = _normalize_string_list(args.get("caller_groups", None), field="caller_groups")
                 requested_scope = scope
 
+                user_id = args.get("user_id", None)
+                if user_id is not None and not isinstance(user_id, str):
+                    raise ValueError("user_id must be a string")
+
                 async with db_lock:
-                    memories = syn.recall(context=query, limit=limit_i,
+                    memories = _active_syn().recall(context=query, limit=limit_i,
                                           memory_type=memory_type, explain=do_explain,
                                           show_disputes=bool(args.get("show_disputes", False)),
                                           exclude_conflicted=bool(args.get("exclude_conflicted", False)),
                                           scope=scope,
-                                          caller_groups=caller_groups)
+                                          caller_groups=caller_groups,
+                                          user_id=user_id)
 
                 mem_dicts = []
                 for m in memories:
@@ -701,6 +861,119 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                         "returned": len(memories),
                     }
                 )
+
+            elif name == "vault_list":
+                if vault_manager is None:
+                    raise ValueError("Vault manager is not configured")
+                async with db_lock:
+                    vaults = vault_manager.list_vaults()
+                payload = _ok_payload({"vaults": vaults, "count": len(vaults)})
+
+            elif name == "vault_create":
+                vault_id = args.get("vault_id")
+                if not isinstance(vault_id, str) or not vault_id.strip():
+                    raise ValueError("vault_id must be a non-empty string")
+                vault_id = vault_id.strip()
+                user_id = args.get("user_id", None)
+                if user_id is not None and not isinstance(user_id, str):
+                    raise ValueError("user_id must be a string")
+
+                async with db_lock:
+                    if vault_manager is None:
+                        raise ValueError("Vault manager is not configured")
+                    if vault_manager.get_vault_info(vault_id) is not None:
+                        raise ValueError(f"Vault '{vault_id}' already exists")
+                    vault_manager.get_or_create_vault(vault_id, user_id=user_id)
+                    vaults = vault_manager.list_vaults()
+                    created = [v for v in vaults if v.get("vault_id") == vault_id]
+                    created_info = created[0] if created else {"vault_id": vault_id, "user_id": user_id}
+                payload = _ok_payload({"success": True, "vault": created_info})
+
+            elif name == "vault_switch":
+                vault_id = args.get("vault_id")
+                if not isinstance(vault_id, str) or not vault_id.strip():
+                    raise ValueError("vault_id must be a non-empty string")
+                vault_id = vault_id.strip()
+
+                async with db_lock:
+                    if vault_manager is None:
+                        raise ValueError("Vault manager is not configured")
+                    if vault_manager.get_vault_info(vault_id) is None:
+                        raise ValueError(f"Vault '{vault_id}' does not exist")
+                    active_state["syn"] = vault_manager.get_or_create_vault(vault_id)
+                    if vault_manager.get_vault_info(vault_id) is not None:
+                        active_vault = vault_manager.get_vault_info(vault_id)
+                    else:
+                        active_vault = {"vault_id": vault_id}
+                payload = _ok_payload({"success": True, "active_vault": active_vault})
+
+            elif name == "inbox_list":
+                limit = _as_int(args.get("limit", 20), field="limit")
+                async with db_lock:
+                    pending = _active_syn().list_pending()
+                if limit < 1:
+                    raise ValueError("limit must be >= 1")
+                if limit < len(pending):
+                    pending = pending[:limit]
+                payload = _ok_payload({"pending": pending, "count": len(pending)})
+
+            elif name == "inbox_approve":
+                item_id = args.get("item_id")
+                if not isinstance(item_id, str) or not item_id.strip():
+                    raise ValueError("item_id must be a non-empty string")
+
+                async with db_lock:
+                    memory = _active_syn().approve_memory(item_id=item_id)
+                    if memory is not None:
+                        _active_syn().flush()
+                payload = _ok_payload({"success": memory is not None, "memory_id": getattr(memory, "id", None)})
+
+            elif name == "inbox_reject":
+                item_id = args.get("item_id")
+                if not isinstance(item_id, str) or not item_id.strip():
+                    raise ValueError("item_id must be a non-empty string")
+
+                async with db_lock:
+                    success = bool(_active_syn().reject_memory(item_id=item_id))
+                payload = _ok_payload({"success": success, "item_id": item_id})
+
+            elif name == "inbox_redact":
+                item_id = args.get("item_id")
+                if not isinstance(item_id, str) or not item_id.strip():
+                    raise ValueError("item_id must be a non-empty string")
+                redacted_content = args.get("redacted_content", "")
+                if not isinstance(redacted_content, str):
+                    raise ValueError("redacted_content must be a string")
+                if not redacted_content.strip():
+                    raise ValueError("redacted_content cannot be empty")
+
+                async with db_lock:
+                    memory = _active_syn().redact_memory(item_id=item_id, redacted_content=redacted_content)
+                    if memory is not None:
+                        _active_syn().flush()
+                payload = _ok_payload({"success": memory is not None, "memory_id": getattr(memory, "id", None)})
+
+            elif name == "inbox_pin":
+                item_id = args.get("item_id")
+                if not isinstance(item_id, str) or not item_id.strip():
+                    raise ValueError("item_id must be a non-empty string")
+
+                async with db_lock:
+                    memory = _active_syn().pin_memory(item_id=item_id)
+                    if memory is not None:
+                        _active_syn().flush()
+                payload = _ok_payload({"success": memory is not None, "memory_id": getattr(memory, "id", None)})
+
+            elif name == "natural_forget":
+                command = args.get("command", "")
+                if not isinstance(command, str) or not command.strip():
+                    raise ValueError("command must be a non-empty string")
+                command = command.strip()
+                dry_run = bool(args.get("dry_run", False))
+
+                async with db_lock:
+                    result = _active_syn().natural_forget(command=command, dry_run=dry_run)
+                payload = _ok_payload(result)
 
             elif name == "forget":
                 memory_id = _as_int(args.get("memory_id"), field="memory_id")
@@ -1195,6 +1468,7 @@ async def _run_server(*, data_dir: str, scope_policy_name: Optional[str] = None)
     db_prefix = os.path.join(data_dir, "synapse")
 
     from scope_policy import ScopePolicy
+    from vault_manager import VaultManager
     policy_name = scope_policy_name or os.environ.get("SYNAPSE_SCOPE_POLICY")
     scope_policy = None
     if policy_name:
@@ -1203,7 +1477,8 @@ async def _run_server(*, data_dir: str, scope_policy_name: Optional[str] = None)
             raise ValueError(f"Unknown scope policy: {policy_name}")
         scope_policy = factory[policy_name]()
 
-    syn = Synapse(db_prefix, scope_policy=scope_policy)
+    vault_manager = VaultManager(os.path.join(data_dir, "vaults"))
+    syn = Synapse(db_prefix, scope_policy=scope_policy, vault_manager=vault_manager)
     # Synapse AI Memory can optionally call a local Ollama server for embeddings; for MCP usage
     # we default this off to avoid surprising latency/timeouts. Opt-in via env var.
     if os.environ.get("SYNAPSE_MCP_ENABLE_EMBEDDINGS", "").strip() not in ("1", "true", "TRUE", "yes", "YES"):

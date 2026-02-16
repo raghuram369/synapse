@@ -55,8 +55,17 @@ Example:
 
 ## Exposed Tools
 
-- `remember`: store a memory (`content`, `memory_type`, `metadata`, `episode`)
-- `recall`: search memories (`query`, `limit`, `memory_type`, `explain`, `show_disputes`, `exclude_conflicted`)
+- `remember`: store a memory (`content`, `memory_type`, `metadata`, `episode`, optional `user_id` for vault routing)
+- `recall`: search memories (`query`, `limit`, `memory_type`, `explain`, `show_disputes`, `exclude_conflicted`, optional `user_id` for vault routing)
+- `vault_list`: list all vaults
+- `vault_create`: create a vault (`vault_id`, optional `user_id`)
+- `vault_switch`: switch active vault (`vault_id`)
+- `inbox_list`: list pending memory-review items
+- `inbox_approve`: approve a pending item (`item_id`)
+- `inbox_reject`: reject a pending item (`item_id`)
+- `inbox_redact`: redact and approve a pending item (`item_id`, `redacted_content`)
+- `inbox_pin`: pin and approve a pending item (`item_id`)
+- `natural_forget`: forget by natural language (`command`, optional `dry_run`)
 - `list`: list memories (`limit`, `offset`, `sort`)
 - `browse`: browse by concept (`concept`, `limit`, `offset`)
 - `count`: count stored (non-consolidated) memories
