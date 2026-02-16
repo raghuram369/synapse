@@ -6,7 +6,7 @@
 pip install synapse-ai-memory
 ```
 
-![Version](https://img.shields.io/badge/version-0.9.0-blue) ![Tests](https://img.shields.io/badge/tests-420%20passing-brightgreen) ![Cloud Calls](https://img.shields.io/badge/cloud%20calls-0-green) ![Speed](https://img.shields.io/badge/recall-fast-lightgrey)
+![Version](https://img.shields.io/badge/version-0.10.0-blue) ![Tests](https://img.shields.io/badge/tests-758%20passing-brightgreen) ![Cloud Calls](https://img.shields.io/badge/cloud%20calls-0-green) ![Speed](https://img.shields.io/badge/recall-fast-lightgrey)
 
 ---
 
@@ -136,6 +136,61 @@ Route memories through a pending inbox with `--review`. Nothing gets saved until
 
 ---
 
+## Memory Scoping — Three Locked Doors
+
+![Scope Demo](assets/scope-demo.gif)
+
+Every memory has a visibility level: **private**, **shared**, or **public**.
+
+```python
+from synapse import Synapse
+
+s = Synapse()
+s.remember("I prefer dark mode", scope="public")          # anyone can see
+s.remember("Project deadline is March 1", scope="shared")  # my team can see
+s.remember("My SSN is 123-45-6789", scope="private")       # only me
+```
+
+When your agent talks to external users, it requests `scope="shared"` — private memories never enter the conversation. Can't leak what was never loaded.
+
+### Runtime Enforcement (The Model Can't Cheat)
+
+```python
+from synapse import Synapse
+from scope_policy import ScopePolicy
+
+# Lock this agent to shared-only — even if tricked, it can't access private
+s = Synapse("./store", scope_policy=ScopePolicy.external())
+s.recall("what's my SSN?", scope="private")  # → clamped to "shared", returns nothing
+```
+
+Set once at startup. Immutable. The AI can't override it.
+
+### Sensitive Flag (Never Share)
+
+```python
+s.remember("My kid goes to Lincoln Elementary", sensitive=True)
+```
+
+Sensitive memories are hard-blocked from non-private scope. Not pattern matching — a deliberate lock. Synapse auto-detects health conditions, school names, family details, and flags them.
+
+### Group Sharing
+
+```python
+s.remember("Vacation plans", scope="shared", shared_with=["family"])
+s.remember("Sprint goals", scope="shared", shared_with=["team:eng"])
+```
+
+"Shared" doesn't mean shared with everyone. Different groups see different things.
+
+### PII Scrubber (Belt and Suspenders)
+
+Even after scope filtering + sensitive blocking, outgoing data gets scrubbed for SSNs, credit cards, emails, phone numbers, and IPs.
+
+**Three layers:** scope filtering → sensitive blocking → PII scrubbing.
+
+---
+
 ## Runs Forever (Autostart)
 
 ```bash
@@ -218,6 +273,8 @@ No API keys. No cloud. No setup. Just `pip install` and go.
 - 🌐 **Federation** — P2P agent memory sync via Merkle trees and vector clocks
 - ✂️ **Forgetting + privacy** — TTL, topic-forget, redaction, GDPR delete, policy presets
 - 🔒 **Privacy-first** — zero cloud calls, zero telemetry. Your data never leaves your machine
+- 🔐 **Memory scoping** — private/shared/public visibility + runtime enforcement + sensitive flag + PII scrubbing
+- 👥 **Group sharing** — share memories with specific groups, not everyone
 - 🔧 **One-line install** — `synapse install claude/openclaw` auto-configures everything
 - 📥 **Importers** — ChatGPT, Claude, WhatsApp, notes, clipboard, JSONL, CSV
 - 🎛️ **Policy presets** — minimal, private, work, ephemeral — no config needed
@@ -535,7 +592,7 @@ Multiple indexes. One fused result. No LLM in the loop.
 ## Quick Links
 
 - 📦 PyPI: `synapse-ai-memory`
-- 🧪 Tests: `tests/` (420 tests)
+- 🧪 Tests: `tests/` (758 tests)
 - 🔌 Integrations: `integrations/`
 - 🧰 Examples: `examples/`
 - 📈 Benchmarks: `bench/`
