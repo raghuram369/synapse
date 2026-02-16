@@ -56,11 +56,41 @@ Example:
 ## Exposed Tools
 
 - `remember`: store a memory (`content`, `memory_type`, `metadata`, `episode`)
-- `recall`: search memories (`query`, `limit`, `memory_type`)
-- `forget`: delete by ID (`memory_id`)
+- `recall`: search memories (`query`, `limit`, `memory_type`, `explain`, `show_disputes`, `exclude_conflicted`)
+- `list`: list memories (`limit`, `offset`, `sort`)
+- `browse`: browse by concept (`concept`, `limit`, `offset`)
 - `count`: count stored (non-consolidated) memories
-- `link`: create an edge (`source_id`, `target_id`, `edge_type`, `weight`)
 - `concepts`: list concepts in the graph
+- `link`: create an edge (`source_id`, `target_id`, `edge_type`, `weight`)
+- `forget`: delete by ID (`memory_id`)
+
+Forgetting + privacy:
+
+- `forget_topic`: forget all memories related to a topic/concept (`topic`)
+- `redact`: redact fields while preserving metadata and graph links (`memory_id`, `fields`)
+- `gdpr_delete`: full delete by user tag or concept (`user_id`, `concept`)
+
+Truth maintenance + inspection:
+
+- `contradictions`: list unresolved contradictions
+- `beliefs`: list current belief versions (worldview)
+
+Maintenance:
+
+- `sleep`: run the full maintenance cycle (consolidate/promote/pattern-mine/prune/cleanup/communities)
+- `communities`: list detected concept communities
+
+LLM integration:
+
+- `compile_context`: compile an LLM-ready ContextPack (`query`, `budget`, `policy`)
+
+Maintenance + temporal helpers:
+
+- `consolidate`: consolidate similar memories (`min_cluster_size`, `similarity_threshold`)
+- `fact_history`: show the evolution chain for a fact (`query`)
+- `timeline`: timeline-style view for a fact (`query`)
+- `hot_concepts`: show most-activated concepts (`k`)
+- `prune`: prune old/weak memories (`max_age_days`, `min_strength`)
 
 ## Notes
 

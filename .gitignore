@@ -79,3 +79,4 @@ docs/_build/bench_locomo_extraction.py
 skills/
 .clawdhub/
 TODO.md
+longmemeval_hard_v2_results.json

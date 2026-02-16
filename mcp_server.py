@@ -223,6 +223,54 @@ def _tool_schema_link() -> Dict[str, Any]:
 def _tool_schema_concepts() -> Dict[str, Any]:
     return {"type": "object", "additionalProperties": False, "properties": {}}
 
+def _tool_schema_compile_context() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "query": {"type": "string", "minLength": 1, "description": "Query / task to compile context for."},
+            "budget": {"type": "integer", "minimum": 1, "maximum": 200000, "default": 4000},
+            "policy": {
+                "type": "string",
+                "enum": ["balanced", "precise", "broad", "temporal"],
+                "default": "balanced",
+            },
+        },
+        "required": ["query"],
+    }
+
+
+def _tool_schema_beliefs() -> Dict[str, Any]:
+    return {"type": "object", "additionalProperties": False, "properties": {}}
+
+
+def _tool_schema_contradictions() -> Dict[str, Any]:
+    return {"type": "object", "additionalProperties": False, "properties": {}}
+
+
+def _tool_schema_communities() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "include_summaries": {
+                "type": "boolean",
+                "default": False,
+                "description": "If true, compute a short summary per community from matching memories.",
+            },
+        },
+    }
+
+
+def _tool_schema_sleep() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "verbose": {"type": "boolean", "default": False},
+        },
+    }
+
 
 def _active_memory_count(syn: Synapse) -> int:
     # Mirror Synapse.recall() filtering: ignore consolidated memories.
@@ -344,6 +392,31 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                     },
                     "required": ["query"],
                 },
+            ),
+            types.Tool(
+                name="compile_context",
+                description="Compile an LLM-ready ContextPack (memories + graph + summaries + evidence).",
+                inputSchema=_tool_schema_compile_context(),
+            ),
+            types.Tool(
+                name="beliefs",
+                description="Show current belief versions (worldview) derived from triples.",
+                inputSchema=_tool_schema_beliefs(),
+            ),
+            types.Tool(
+                name="contradictions",
+                description="List unresolved contradictions detected in memory.",
+                inputSchema=_tool_schema_contradictions(),
+            ),
+            types.Tool(
+                name="communities",
+                description="List detected concept communities (optionally with summaries).",
+                inputSchema=_tool_schema_communities(),
+            ),
+            types.Tool(
+                name="sleep",
+                description="Run the full sleep maintenance cycle (consolidate/promote/mine/prune/cleanup).",
+                inputSchema=_tool_schema_sleep(),
             ),
         ]
 
@@ -593,6 +666,98 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                 async with db_lock:
                     chain = syn.fact_history(query.strip())
                 payload = _ok_payload({"timeline": chain, "count": len(chain)})
+
+            elif name == "compile_context":
+                query = args.get("query", "")
+                if not isinstance(query, str) or not query.strip():
+                    raise ValueError("query must be a non-empty string")
+
+                budget = args.get("budget", 4000)
+                budget_i = _as_int(budget, field="budget")
+                if budget_i <= 0:
+                    raise ValueError("budget must be > 0")
+
+                policy = args.get("policy", "balanced")
+                if not isinstance(policy, str) or not policy.strip():
+                    policy = "balanced"
+                policy = policy.strip().lower()
+
+                async with db_lock:
+                    pack = syn.compile_context(query=query.strip(), budget=budget_i, policy=policy)
+                payload = _ok_payload(
+                    {
+                        "context_pack": pack.to_dict(),
+                        "compact": pack.to_compact(),
+                        "system_prompt": pack.to_system_prompt(),
+                    }
+                )
+
+            elif name == "beliefs":
+                async with db_lock:
+                    beliefs = syn.beliefs()
+
+                result: Dict[str, Any] = {}
+                for fact_key, version in (beliefs or {}).items():
+                    if is_dataclass(version):
+                        result[fact_key] = asdict(version)
+                    else:
+                        result[fact_key] = dict(getattr(version, "__dict__", {}))
+
+                payload = _ok_payload({"beliefs": result, "count": len(result)})
+
+            elif name == "contradictions":
+                async with db_lock:
+                    contradictions = syn.contradictions()
+                    store_view = dict(syn.store.memories)
+
+                items: List[Dict[str, Any]] = []
+                for c in contradictions or []:
+                    if is_dataclass(c):
+                        row = asdict(c)
+                    else:
+                        row = dict(getattr(c, "__dict__", {}))
+                    a_id = row.get("memory_id_a")
+                    b_id = row.get("memory_id_b")
+                    if isinstance(a_id, int) and a_id in store_view:
+                        row["memory_a"] = (store_view[a_id].get("content") or "")[:400]
+                    if isinstance(b_id, int) and b_id in store_view:
+                        row["memory_b"] = (store_view[b_id].get("content") or "")[:400]
+                    items.append(row)
+
+                payload = _ok_payload({"contradictions": items, "count": len(items)})
+
+            elif name == "communities":
+                include_summaries = bool(args.get("include_summaries", False))
+                async with db_lock:
+                    communities = syn.communities()
+
+                items: List[Dict[str, Any]] = []
+                for community in communities or []:
+                    if is_dataclass(community):
+                        row = asdict(community)
+                    else:
+                        row = dict(getattr(community, "__dict__", {}))
+                    if isinstance(row.get("concepts"), set):
+                        row["concepts"] = sorted(row["concepts"])
+                    if include_summaries:
+                        hubs = row.get("hub_concepts") or []
+                        hub = hubs[0] if hubs else None
+                        if isinstance(hub, str) and hub.strip():
+                            row["summary"] = syn.community_summary(hub)
+                    items.append(row)
+
+                payload = _ok_payload({"communities": items, "count": len(items)})
+
+            elif name == "sleep":
+                verbose = bool(args.get("verbose", False))
+                async with db_lock:
+                    report = syn.sleep(verbose=verbose)
+                    syn.flush()
+
+                if is_dataclass(report):
+                    payload = _ok_payload({"sleep_report": asdict(report)})
+                else:
+                    payload = _ok_payload({"sleep_report": dict(getattr(report, "__dict__", {}))})
 
             else:
                 payload = _error_payload(ValueError(f"Unknown tool: {name}"), code="unknown_tool")
