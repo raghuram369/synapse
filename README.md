@@ -77,7 +77,7 @@ Sleep runs a full maintenance cycle and gives you a human-readable report: what 
 Drop memory into any chat runtime with a tiny command surface:
 
 ```
-/mem remember I'm working on Project Atlas
+/mem remember I'm working on Project Horizon
 /mem recall what project?
 /mem contradict
 /mem timeline
