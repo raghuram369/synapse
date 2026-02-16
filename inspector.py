@@ -759,6 +759,10 @@ class SynapseInspector:
                         )
                     elif path == "/api/digests":
                         payload = inspector._collect_digests()
+                    elif path == "/api/pending":
+                        from review_queue import ReviewQueue
+                        rq = ReviewQueue(inspector.synapse)
+                        payload = {"count": rq.count(), "items": rq.list_pending()}
                     elif path == "/api/recall":
                         payload = inspector._collect_recall(
                             query=(params.get("q", [""])[0] or ""),

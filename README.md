@@ -48,7 +48,7 @@ Bring your history. Every conversation, note, and snippet — indexed and search
 ## Privacy Presets (One Command)
 
 ```bash
-synapse policy apply private    # PII redaction + 90-day TTL + encrypted exports
+synapse policy apply private    # PII redaction + 90-day TTL + auto-forget sensitive topics
 synapse policy apply minimal    # Keep tagged memories, prune everything else
 synapse policy apply ephemeral  # Auto-delete after session ends
 synapse policy apply work       # Team-friendly retention rules

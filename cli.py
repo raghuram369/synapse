@@ -1733,6 +1733,11 @@ def cmd_pack(args):
     finally:
         s.close()
     print(f"✓ Saved brain pack: {output}")
+    try:
+        from signing import sign_artifact
+        sign_artifact(output)
+    except Exception:
+        pass
 
 
 def cmd_card(args):
@@ -1911,6 +1916,122 @@ def cmd_demo(args):
 
     if args.markdown:
         print(result)
+
+
+def cmd_uninstall(args):
+    from installer import uninstall_claude, uninstall_openclaw, uninstall_nanoclaw, uninstall_all
+    target = args.target
+    if target == "claude":
+        uninstall_claude()
+    elif target == "openclaw":
+        uninstall_openclaw()
+    elif target == "nanoclaw":
+        uninstall_nanoclaw()
+    elif target == "all":
+        uninstall_all()
+
+
+def cmd_service(args):
+    from service import install_service, uninstall_service, service_status
+    action = getattr(args, "service_action", None)
+    if action == "install":
+        db_path = _resolve_appliance_db_path(args)
+        install_service(db_path, sleep_schedule=getattr(args, "sleep_schedule", "daily"))
+    elif action == "uninstall":
+        uninstall_service()
+    elif action == "status":
+        service_status()
+    else:
+        print("Usage: synapse service install|uninstall|status")
+
+
+def cmd_watch(args):
+    from capture import clipboard_watch
+    from synapse import Synapse
+    db_path = _resolve_db_path(args)
+    s = Synapse(db_path)
+    try:
+        clipboard_watch(s, interval=args.interval, tags=args.tags)
+    finally:
+        s.close()
+
+
+def cmd_clip(args):
+    from capture import clip_text, clip_stdin
+    from synapse import Synapse
+    db_path = _resolve_db_path(args)
+    s = Synapse(db_path)
+    try:
+        if args.text:
+            memory = clip_text(s, args.text, tags=args.tags)
+            print(f"✅ Remembered: {args.text[:80]}")
+        else:
+            clip_stdin(s, tags=args.tags)
+        s.flush()
+    finally:
+        s.close()
+
+
+def cmd_review(args):
+    from review_queue import ReviewQueue
+    from synapse import Synapse
+    action = getattr(args, "review_action", None)
+
+    if action == "count":
+        rq = ReviewQueue(None)
+        print(f"🔢 Pending: {rq.count()}")
+        return
+
+    if action == "list":
+        rq = ReviewQueue(None)
+        items = rq.list_pending()
+        if not items:
+            print("📋 No pending items")
+            return
+        print(f"📋 {len(items)} pending item(s):\n")
+        for item in items:
+            preview = item["content"][:100].replace("\n", " ")
+            print(f"  [{item['id']}] {preview}")
+        return
+
+    if action == "reject":
+        rq = ReviewQueue(None)
+        if rq.reject(args.item_id):
+            print(f"✅ Rejected item {args.item_id}")
+        else:
+            print(f"⚠️  Item {args.item_id} not found")
+        return
+
+    if action == "approve":
+        db_path = _resolve_db_path(args)
+        s = Synapse(db_path)
+        rq = ReviewQueue(s)
+        try:
+            if args.item_id == "all":
+                results = rq.approve_all()
+                print(f"✅ Approved {len(results)} item(s)")
+            else:
+                memory = rq.approve(args.item_id)
+                if memory:
+                    print(f"✅ Approved and remembered item {args.item_id}")
+                else:
+                    print(f"⚠️  Item {args.item_id} not found")
+            s.flush()
+        finally:
+            s.close()
+        return
+
+    print("Usage: synapse review list|approve|reject|count")
+
+
+def cmd_sign(args):
+    from signing import sign_artifact
+    sign_artifact(args.file)
+
+
+def cmd_verify(args):
+    from signing import verify_artifact
+    verify_artifact(args.file)
 
 
 def cmd_install(args):
@@ -2179,6 +2300,11 @@ def cmd_card_share(args):
             with open(output, "w", encoding="utf-8") as fp:
                 fp.write(result)
             print(f"✅ Card written to {output}")
+            try:
+                from signing import sign_artifact
+                sign_artifact(output)
+            except Exception:
+                pass
         else:
             print(result)
     finally:
@@ -2416,6 +2542,7 @@ def main():
     p.add_argument('--type', default='fact')
     p.add_argument('--extract', action='store_true')
     p.add_argument('--no-extract', dest='extract', action='store_false')
+    p.add_argument('--review', action='store_true', help='Route to review queue instead of saving directly')
     p.set_defaults(extract=None)
 
     p = subparsers.add_parser('recall', help='Search for memories')
@@ -2438,6 +2565,10 @@ def main():
     p_set = p_policy.add_parser('set', help='Set active policy preset')
     p_set.add_argument('preset', choices=['minimal', 'private', 'work', 'ephemeral'])
     p_set.set_defaults(policy_action='set')
+
+    p_apply = p_policy.add_parser('apply', help='Set active policy preset (alias for set)')
+    p_apply.add_argument('preset', choices=['minimal', 'private', 'work', 'ephemeral'])
+    p_apply.set_defaults(policy_action='set')
 
     p_list = p_policy.add_parser('list', help='List available policy presets')
     p_list.set_defaults(policy_action='list')
@@ -2700,6 +2831,63 @@ def main():
     p = subparsers.add_parser('import-wizard', help='Interactive import wizard')
     p.add_argument('--db', help='Synapse AI Memory database path')
 
+    # ── Uninstall command ──
+    p = subparsers.add_parser('uninstall', help='Remove Synapse client integrations')
+    p.add_argument('target', choices=['claude', 'openclaw', 'nanoclaw', 'all'], help='Uninstall target')
+
+    # ── Service command ──
+    p_service = subparsers.add_parser('service', help='Manage autostart service')
+    service_sub = p_service.add_subparsers(dest='service_action', help='Service actions')
+
+    p_si = service_sub.add_parser('install', help='Install autostart service')
+    p_si.add_argument('--db', default=APPLIANCE_DB_DEFAULT, help='Synapse database path')
+    p_si.add_argument('--sleep', dest='sleep_schedule', default='daily', choices=['daily', 'hourly', 'off'])
+    p_si.set_defaults(service_action='install')
+
+    p_su = service_sub.add_parser('uninstall', help='Remove autostart service')
+    p_su.set_defaults(service_action='uninstall')
+
+    p_ss = service_sub.add_parser('status', help='Check service status')
+    p_ss.set_defaults(service_action='status')
+
+    # ── Clipboard watch & clip commands ──
+    p = subparsers.add_parser('watch', help='Watch clipboard for new content')
+    p.add_argument('--clipboard', action='store_true', help='Watch clipboard')
+    p.add_argument('--interval', type=float, default=2.0, help='Poll interval in seconds')
+    p.add_argument('--tag', action='append', dest='tags', help='Tag for captured memories')
+    p.add_argument('--db', help='Synapse database path')
+
+    p = subparsers.add_parser('clip', help='Capture text to memory')
+    p.add_argument('text', nargs='?', default=None, help='Text to capture (or pipe via stdin)')
+    p.add_argument('--tag', action='append', dest='tags', help='Tag for captured memory')
+    p.add_argument('--db', help='Synapse database path')
+
+    # ── Review queue commands ──
+    p_review = subparsers.add_parser('review', help='Memory review queue')
+    review_sub = p_review.add_subparsers(dest='review_action', help='Review actions')
+
+    p_rl = review_sub.add_parser('list', help='Show pending items')
+    p_rl.set_defaults(review_action='list')
+
+    p_ra = review_sub.add_parser('approve', help='Approve pending item(s)')
+    p_ra.add_argument('item_id', help='Item ID or "all"')
+    p_ra.add_argument('--db', help='Synapse database path')
+    p_ra.set_defaults(review_action='approve')
+
+    p_rr = review_sub.add_parser('reject', help='Reject a pending item')
+    p_rr.add_argument('item_id', help='Item ID')
+    p_rr.set_defaults(review_action='reject')
+
+    p_rc = review_sub.add_parser('count', help='Count pending items')
+    p_rc.set_defaults(review_action='count')
+
+    # ── Sign & verify commands ──
+    p = subparsers.add_parser('sign', help='Sign a .brain or .synapse file')
+    p.add_argument('file', help='File to sign')
+
+    p = subparsers.add_parser('verify', help='Verify a signed file')
+    p.add_argument('file', help='File to verify')
+
     args = parser.parse_args()
 
     if not args.command:
@@ -2740,6 +2928,13 @@ def main():
         'sync': cmd_sync_fed,
         'peers': cmd_peers_fed,
         'demo': cmd_demo,
+        'uninstall': cmd_uninstall,
+        'service': cmd_service,
+        'watch': cmd_watch,
+        'clip': cmd_clip,
+        'review': cmd_review,
+        'sign': cmd_sign,
+        'verify': cmd_verify,
     }
 
     if args.command in standalone:
@@ -2748,6 +2943,15 @@ def main():
 
     if args.command == 'stats' and getattr(args, 'db', None):
         cmd_stats(args)
+        return
+
+    # Handle --review flag for remember command
+    if args.command == 'remember' and getattr(args, 'review', False):
+        from review_queue import ReviewQueue
+        rq = ReviewQueue(None)
+        item_id = rq.submit(args.content, metadata={"memory_type": args.type})
+        print(f"📋 Submitted for review (id: {item_id})")
+        print(f"   Run: synapse review approve {item_id}")
         return
 
     # Daemon-dependent commands

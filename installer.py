@@ -333,6 +333,64 @@ def install_all(db_path: str, dry_run: bool = False) -> Dict[str, bool]:
     return results
 
 
+def uninstall_claude() -> bool:
+    """Remove Synapse from Claude Desktop MCP config."""
+    config_path = _claude_config_path()
+    if not os.path.exists(config_path):
+        print("⬜ Claude Desktop config not found — nothing to remove.")
+        return False
+    config = _read_json(config_path)
+    mcp_servers = config.get("mcpServers", {})
+    if "synapse" not in mcp_servers:
+        print("⬜ Synapse not found in Claude Desktop config.")
+        return False
+    print(f"  Removing 'synapse' from mcpServers in {config_path}")
+    del mcp_servers["synapse"]
+    # Try restore from backup
+    backup = f"{config_path}.backup"
+    if os.path.exists(backup):
+        print(f"  Backup available at {backup}")
+    _write_json(config_path, config)
+    print("✅ Synapse removed from Claude Desktop. Restart Claude to apply.")
+    return True
+
+
+def uninstall_openclaw() -> bool:
+    """Remove Synapse skill from OpenClaw."""
+    skill_dir = _skill_dir(_openclaw_workspace_root())
+    if not os.path.exists(skill_dir):
+        print("⬜ Synapse skill not found in OpenClaw.")
+        return False
+    print(f"  Removing {skill_dir}")
+    shutil.rmtree(skill_dir)
+    print("✅ Synapse skill removed from OpenClaw.")
+    return True
+
+
+def uninstall_nanoclaw() -> bool:
+    """Remove Synapse skill from NanoClaw."""
+    skill_dir = _skill_dir(_nanoclaw_workspace_root())
+    if not os.path.exists(skill_dir):
+        print("⬜ Synapse skill not found in NanoClaw.")
+        return False
+    print(f"  Removing {skill_dir}")
+    shutil.rmtree(skill_dir)
+    print("✅ Synapse skill removed from NanoClaw.")
+    return True
+
+
+def uninstall_all() -> Dict[str, bool]:
+    """Uninstall from all detected targets."""
+    results = {}
+    for name, fn in [("claude", uninstall_claude), ("openclaw", uninstall_openclaw), ("nanoclaw", uninstall_nanoclaw)]:
+        try:
+            results[name] = fn()
+        except Exception as exc:
+            print(f"⚠️  {name}: {exc}")
+            results[name] = False
+    return results
+
+
 class ClientInstaller:
     TARGETS = {
         "claude": install_claude,
