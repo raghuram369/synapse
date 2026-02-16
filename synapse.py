@@ -2435,3 +2435,89 @@ class Synapse:
             if self.forget(mid):
                 pruned.append(mid)
         return sorted(pruned)
+
+    # --------------------------------------------------------------------------
+    # Memory Router Integration
+    # --------------------------------------------------------------------------
+
+    def ingest(self, text: str, source: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, policy: str = "auto"):
+        """Ingest text through the memory router pipeline.
+        
+        Args:
+            text: Text to process
+            source: Source identifier (e.g., "cli", "api", "clipboard")
+            metadata: Additional metadata to attach
+            policy: Routing policy ("auto", "minimal", "review", "off")
+            
+        Returns:
+            IngestResult indicating what happened
+        """
+        from capture import ingest
+        from review_queue import ReviewQueue
+        
+        review_queue = ReviewQueue(self) if policy in ['review', 'auto'] else None
+        
+        return ingest(
+            text=text,
+            synapse=self,
+            review_queue=review_queue,
+            source=source,
+            meta=metadata,
+            policy=policy
+        )
+    
+    def watch(self, stream_type: str = "stdin", **kwargs):
+        """Watch a stream and feed to memory router.
+        
+        Args:
+            stream_type: "stdin", "file", or "callback"
+            **kwargs: Additional configuration (file_path, policy, batch_size, etc.)
+        """
+        from watch import watch_stdin, watch_file, create_callback_watcher
+        from review_queue import ReviewQueue
+        
+        review_queue = kwargs.get('review_queue')
+        if review_queue is None:
+            policy = kwargs.get('policy', 'auto')
+            review_queue = ReviewQueue(self) if policy in ['review', 'auto'] else None
+            kwargs['review_queue'] = review_queue
+        
+        if stream_type == "stdin":
+            watch_stdin(
+                self,
+                review_queue=kwargs.get('review_queue'),
+                policy=kwargs.get('policy', 'auto'),
+                batch_size=kwargs.get('batch_size', 5),
+                batch_timeout=kwargs.get('batch_timeout', 30.0),
+            )
+        elif stream_type == "file":
+            file_path = kwargs.get('file_path')
+            if not file_path:
+                raise ValueError("file_path required for file stream type")
+            watch_file(
+                file_path,
+                self,
+                review_queue=kwargs.get('review_queue'),
+                policy=kwargs.get('policy', 'auto'),
+                batch_size=kwargs.get('batch_size', 5),
+                batch_timeout=kwargs.get('batch_timeout', 30.0),
+            )
+        elif stream_type == "callback":
+            return create_callback_watcher(
+                self,
+                review_queue=kwargs.get('review_queue'),
+                policy=kwargs.get('policy', 'auto'),
+                batch_size=kwargs.get('batch_size', 5),
+                batch_timeout=kwargs.get('batch_timeout', 30.0),
+            )
+        else:
+            raise ValueError(f"Unknown stream type: {stream_type}")
+
+
+# Add methods to existing Synapse class via the integration function in watch.py
+try:
+    from watch import add_watch_methods
+    # This would add the methods, but since we defined them directly above, we skip this
+    # add_watch_methods(Synapse) 
+except ImportError:
+    pass  # watch.py not available yet

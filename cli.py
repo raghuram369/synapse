@@ -1955,30 +1955,203 @@ def cmd_service(args):
 
 
 def cmd_watch(args):
+    """Enhanced watch command with memory router support."""
     from capture import clipboard_watch
+    from review_queue import ReviewQueue
     from synapse import Synapse
+    from watch import watch_stdin, watch_file
+    
     db_path = _resolve_db_path(args)
     s = Synapse(db_path)
+    rq = ReviewQueue(s) if args.policy in ['review', 'auto'] else None
+    
     try:
-        clipboard_watch(s, interval=args.interval, tags=args.tags)
+        if args.stdin:
+            watch_stdin(
+                s, 
+                review_queue=rq,
+                policy=args.policy, 
+                batch_size=args.batch_size, 
+                batch_timeout=args.batch_timeout
+            )
+        elif args.file:
+            watch_file(
+                args.file, 
+                s, 
+                review_queue=rq,
+                policy=args.policy, 
+                batch_size=args.batch_size, 
+                batch_timeout=args.batch_timeout
+            )
+        elif args.clipboard:
+            clipboard_watch(
+                s, 
+                interval=args.interval, 
+                tags=args.tags, 
+                policy=args.policy,
+                review_queue=rq
+            )
+        else:
+            print("❌ Please specify --stdin, --file, or --clipboard")
+            sys.exit(1)
     finally:
         s.close()
 
 
 def cmd_clip(args):
+    """Enhanced clip command with memory router support."""
     from capture import clip_text, clip_stdin
+    from review_queue import ReviewQueue
     from synapse import Synapse
+    
     db_path = _resolve_db_path(args)
     s = Synapse(db_path)
+    rq = ReviewQueue(s) if args.policy in ['review', 'auto'] else None
+    
     try:
         if args.text:
-            memory = clip_text(s, args.text, tags=args.tags)
-            print(f"✅ Remembered: {args.text[:80]}")
+            result = clip_text(s, args.text, tags=args.tags, policy=args.policy, review_queue=rq)
+            if result.name == "STORED":
+                print(f"✅ Stored: {args.text[:80]}")
+            elif result.name == "QUEUED_FOR_REVIEW":
+                print(f"📋 Queued for review: {args.text[:80]}")
+            elif result.name == "IGNORED_FLUFF":
+                print(f"🙄 Ignored (fluff): {args.text[:80]}")
+            elif result.name == "REJECTED_SECRET":
+                print(f"🔒 Rejected (contains secrets)")
+            elif result.name == "IGNORED_POLICY":
+                print(f"⏸️  Ignored (policy): {args.text[:80]}")
         else:
-            clip_stdin(s, tags=args.tags)
+            clip_stdin(s, tags=args.tags, policy=args.policy, review_queue=rq)
         s.flush()
     finally:
         s.close()
+
+
+def cmd_ingest(args):
+    """New ingest command for one-shot memory router processing."""
+    from capture import ingest
+    from review_queue import ReviewQueue
+    from synapse import Synapse
+    
+    db_path = _resolve_db_path(args)
+    s = Synapse(db_path)
+    rq = ReviewQueue(s) if args.policy in ['review', 'auto'] else None
+    
+    try:
+        if args.file and args.text:
+            print("❌ Provide either text or --file, not both")
+            return
+
+        if args.file:
+            # Ingest from file
+            try:
+                with open(args.file, 'r', encoding='utf-8') as f:
+                    text = f.read().strip()
+                if not text:
+                    print("⚠️  File is empty")
+                    return
+
+                result = ingest(
+                    text=text,
+                    synapse=s,
+                    review_queue=rq,
+                    source=f"file:{args.file}",
+                    meta={"file_path": args.file},
+                    policy=args.policy
+                )
+
+            except Exception as e:
+                print(f"❌ Error reading file: {e}")
+                return
+        else:
+            # Ingest from command line argument
+            if not args.text:
+                print("❌ Missing text. Usage: synapse ingest \"text\" or synapse ingest --file path")
+                return
+            text = args.text.strip()
+            if not text:
+                print("⚠️  No text provided")
+                return
+                
+            result = ingest(
+                text=text,
+                synapse=s,
+                review_queue=rq,
+                source="cli",
+                meta={},
+                policy=args.policy
+            )
+        
+        # Print result
+        preview = text[:100].replace('\n', ' ')
+        if result.name == "STORED":
+            print(f"✅ Stored: {preview}")
+        elif result.name == "QUEUED_FOR_REVIEW":
+            print(f"📋 Queued for review: {preview}")
+            if rq:
+                pending_count = rq.count()
+                print(f"📊 {pending_count} items now pending review")
+        elif result.name == "IGNORED_FLUFF":
+            print(f"🙄 Ignored (conversational fluff): {preview}")
+        elif result.name == "REJECTED_SECRET":
+            print(f"🔒 Rejected (contains sensitive information)")
+        elif result.name == "IGNORED_POLICY":
+            print(f"⏸️  Ignored (policy={args.policy}): {preview}")
+            
+        s.flush()
+    finally:
+        s.close()
+
+
+def cmd_capture(args):
+    """New capture command for managing capture modes."""
+    import os
+    
+    config_dir = os.path.expanduser("~/.synapse")
+    config_file = os.path.join(config_dir, "capture_config.json")
+    os.makedirs(config_dir, exist_ok=True)
+    
+    if args.mode:
+        # Set capture mode
+        import json
+        config = {
+            "capture_mode": args.mode,
+            "updated_at": time.time()
+        }
+        try:
+            with open(config_file, 'w') as f:
+                json.dump(config, f, indent=2)
+            print(f"✅ Capture mode set to: {args.mode}")
+            
+            if args.mode == "auto":
+                print("🤖 Auto mode: High-confidence memories stored automatically, medium-confidence go to review")
+            elif args.mode == "minimal": 
+                print("🎯 Minimal mode: Only very high-confidence memories stored automatically")
+            elif args.mode == "review":
+                print("📋 Review mode: All memories go to review queue for manual approval")
+            elif args.mode == "off":
+                print("⏸️  Off mode: Memory capture disabled")
+                
+        except Exception as e:
+            print(f"❌ Error saving config: {e}")
+    else:
+        # Show current mode
+        try:
+            import json
+            with open(config_file, 'r') as f:
+                config = json.load(f)
+            mode = config.get("capture_mode", "auto")
+            updated_at = config.get("updated_at", 0)
+            print(f"📋 Current capture mode: {mode}")
+            if updated_at:
+                import datetime
+                updated = datetime.datetime.fromtimestamp(updated_at)
+                print(f"🕐 Last updated: {updated.strftime('%Y-%m-%d %H:%M:%S')}")
+        except FileNotFoundError:
+            print("📋 Current capture mode: auto (default)")
+        except Exception as e:
+            print(f"❌ Error reading config: {e}")
 
 
 def cmd_review(args):
@@ -2870,17 +3043,38 @@ def main():
     p_ss = service_sub.add_parser('status', help='Check service status')
     p_ss.set_defaults(service_action='status')
 
-    # ── Clipboard watch & clip commands ──
-    p = subparsers.add_parser('watch', help='Watch clipboard for new content')
-    p.add_argument('--clipboard', action='store_true', help='Watch clipboard')
-    p.add_argument('--interval', type=float, default=2.0, help='Poll interval in seconds')
+    # ── Memory Router commands ──
+    p = subparsers.add_parser('ingest', help='Ingest text through memory router')
+    p.add_argument('text', nargs='?', help='Text to ingest')
+    p.add_argument('--file', help='File to ingest')
+    p.add_argument('--policy', choices=['auto', 'minimal', 'review', 'off'], default='auto', 
+                   help='Memory router policy (default: auto)')
+    p.add_argument('--db', help='Synapse database path')
+
+    p = subparsers.add_parser('watch', help='Watch streams and feed to memory router')
+    watch_group = p.add_mutually_exclusive_group(required=True)
+    watch_group.add_argument('--stdin', action='store_true', help='Watch stdin stream')
+    watch_group.add_argument('--file', help='Watch file for new lines (tail -f style)')
+    watch_group.add_argument('--clipboard', action='store_true', help='Watch clipboard')
+    p.add_argument('--policy', choices=['auto', 'minimal', 'review', 'off'], default='auto',
+                   help='Memory router policy (default: auto)')
+    p.add_argument('--batch-size', type=int, default=5, help='Messages per batch (default: 5)')
+    p.add_argument('--batch-timeout', type=float, default=30.0, help='Batch timeout in seconds (default: 30)')
+    p.add_argument('--interval', type=float, default=2.0, help='Clipboard poll interval in seconds (default: 2)')
     p.add_argument('--tag', action='append', dest='tags', help='Tag for captured memories')
     p.add_argument('--db', help='Synapse database path')
 
-    p = subparsers.add_parser('clip', help='Capture text to memory')
+    p = subparsers.add_parser('clip', help='Capture text to memory via router')
     p.add_argument('text', nargs='?', default=None, help='Text to capture (or pipe via stdin)')
+    p.add_argument('--policy', choices=['auto', 'minimal', 'review', 'off'], default='auto',
+                   help='Memory router policy (default: auto)')
     p.add_argument('--tag', action='append', dest='tags', help='Tag for captured memory')
     p.add_argument('--db', help='Synapse database path')
+
+    p = subparsers.add_parser('capture', help='Manage memory capture mode')
+    p.add_argument('--mode', choices=['auto', 'minimal', 'review', 'off'], 
+                   help='Set capture mode (auto/minimal/review/off)')
+    # When no --mode specified, shows current mode
 
     # ── Review queue commands ──
     p_review = subparsers.add_parser('review', help='Memory review queue')
@@ -2960,6 +3154,8 @@ def main():
         'service': cmd_service,
         'watch': cmd_watch,
         'clip': cmd_clip,
+        'ingest': cmd_ingest,
+        'capture': cmd_capture,
         'review': cmd_review,
         'sign': cmd_sign,
         'verify': cmd_verify,

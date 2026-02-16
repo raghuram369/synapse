@@ -95,6 +95,8 @@ py-modules = [
     "policies",
     "card_share",
     "demo_runner",
+    "enrich",
+    "watch",
 ]
 packages = [
     "federation",

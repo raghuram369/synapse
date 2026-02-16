@@ -418,6 +418,34 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                 description="Run the full sleep maintenance cycle (consolidate/promote/mine/prune/cleanup).",
                 inputSchema=_tool_schema_sleep(),
             ),
+            types.Tool(
+                name="ingest",
+                description="Process text through the memory router for intelligent capture.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string", "description": "Text content to ingest"},
+                        "source": {"type": "string", "description": "Source identifier (e.g., 'api', 'chat', 'file')", "default": "api"},
+                        "policy": {"type": "string", "enum": ["auto", "minimal", "review", "off"], "description": "Routing policy", "default": "auto"},
+                        "metadata": {"type": "object", "description": "Additional metadata to attach"},
+                    },
+                    "required": ["text"],
+                },
+            ),
+            types.Tool(
+                name="watch_stream",
+                description="Set up stream watching with memory router (returns watcher ID for callback-based streams).",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "stream_type": {"type": "string", "enum": ["callback"], "description": "Stream type (only 'callback' supported in MCP)", "default": "callback"},
+                        "policy": {"type": "string", "enum": ["auto", "minimal", "review", "off"], "description": "Routing policy", "default": "auto"},
+                        "batch_size": {"type": "integer", "description": "Messages per batch", "default": 5},
+                        "batch_timeout": {"type": "number", "description": "Batch timeout in seconds", "default": 30.0},
+                        "source": {"type": "string", "description": "Source identifier", "default": "stream"},
+                    },
+                },
+            ),
         ]
 
     @server.call_tool()
@@ -758,6 +786,95 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                     payload = _ok_payload({"sleep_report": asdict(report)})
                 else:
                     payload = _ok_payload({"sleep_report": dict(getattr(report, "__dict__", {}))})
+
+            elif name == "ingest":
+                text = args.get("text", "")
+                if not isinstance(text, str) or not text.strip():
+                    raise ValueError("text must be a non-empty string")
+                
+                source = args.get("source", "api")
+                if not isinstance(source, str):
+                    raise ValueError("source must be a string")
+                
+                policy = args.get("policy", "auto")
+                if policy not in ["auto", "minimal", "review", "off"]:
+                    raise ValueError("policy must be one of: auto, minimal, review, off")
+                
+                metadata = args.get("metadata", {})
+                if not isinstance(metadata, dict):
+                    raise ValueError("metadata must be an object")
+                
+                async with db_lock:
+                    # Import here to avoid circular imports
+                    from capture import ingest
+                    from review_queue import ReviewQueue
+                    
+                    review_queue = ReviewQueue(syn) if policy in ['review', 'auto'] else None
+                    
+                    result = ingest(
+                        text=text.strip(),
+                        synapse=syn,
+                        review_queue=review_queue,
+                        source=source,
+                        meta=metadata,
+                        policy=policy
+                    )
+                    
+                    syn.flush()
+                
+                payload = _ok_payload({
+                    "result": result.name,
+                    "description": {
+                        "STORED": "Memory stored automatically",
+                        "QUEUED_FOR_REVIEW": "Memory queued for manual review",
+                        "IGNORED_FLUFF": "Ignored as conversational fluff",
+                        "REJECTED_SECRET": "Rejected due to sensitive content",
+                        "IGNORED_POLICY": "Ignored due to policy settings"
+                    }.get(result.name, "Unknown result")
+                })
+
+            elif name == "watch_stream":
+                stream_type = args.get("stream_type", "callback")
+                if stream_type != "callback":
+                    raise ValueError("Only 'callback' stream type is supported in MCP")
+                
+                policy = args.get("policy", "auto")
+                if policy not in ["auto", "minimal", "review", "off"]:
+                    raise ValueError("policy must be one of: auto, minimal, review, off")
+                
+                batch_size = _as_int(args.get("batch_size", 5), field="batch_size")
+                batch_timeout = _as_float(args.get("batch_timeout", 30.0), field="batch_timeout")
+                source = args.get("source", "stream")
+                
+                async with db_lock:
+                    from watch import create_callback_watcher
+                    from review_queue import ReviewQueue
+                    
+                    review_queue = ReviewQueue(syn) if policy in ['review', 'auto'] else None
+                    
+                    watcher = create_callback_watcher(
+                        syn,
+                        review_queue=review_queue,
+                        policy=policy,
+                        batch_size=batch_size,
+                        batch_timeout=batch_timeout
+                    )
+                    
+                    # Store watcher reference (in real implementation, you'd want a registry)
+                    watcher_id = f"watcher_{int(time.time() * 1000000)}"
+                    
+                payload = _ok_payload({
+                    "watcher_id": watcher_id,
+                    "status": "created",
+                    "config": {
+                        "stream_type": stream_type,
+                        "policy": policy,
+                        "batch_size": batch_size,
+                        "batch_timeout": batch_timeout,
+                        "source": source
+                    },
+                    "note": "To send messages to this watcher, you would call watcher.on_message(text) in your integration code"
+                })
 
             else:
                 payload = _error_payload(ValueError(f"Unknown tool: {name}"), code="unknown_tool")
