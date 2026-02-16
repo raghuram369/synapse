@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "synapse-ai-memory"
-version = "0.8.0"
+version = "0.8.1"
 description = "A neuroscience-inspired memory database for AI agents with portable format and federation. Zero dependencies. Pure Python."
 authors = [{name = "Raghuram Parvataneni"}]
 readme = "README.md"
@@ -88,6 +88,9 @@ py-modules = [
     "packs",
     "installer",
     "inspector",
+    "policies",
+    "card_share",
+    "demo_runner",
 ]
 packages = [
     "federation",
