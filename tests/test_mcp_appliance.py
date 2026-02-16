@@ -34,8 +34,18 @@ class TestMcpApplianceServer(unittest.TestCase):
         return asyncio.run(coroutine)
 
     async def _call(self, name, args=None):
-        response = await self.server.call_tool(name, args or {})
-        payload = json.loads(response[0].text)
+        request_handlers = getattr(self.server, "request_handlers", {})
+        if types.CallToolRequest in request_handlers:
+            request = types.CallToolRequest(
+                method="tools/call",
+                params=types.CallToolRequestParams(name=name, arguments=args or {}),
+            )
+            response = await request_handlers[types.CallToolRequest](request)
+            result = response.root
+            payload = json.loads(result.content[0].text)
+        else:  # pragma: no cover - compatibility fallback for older SDKs
+            response = await self.server.call_tool(name, args or {})
+            payload = json.loads(response[0].text)
         return payload
 
     def _call_sync(self, name, args=None):
@@ -43,7 +53,13 @@ class TestMcpApplianceServer(unittest.TestCase):
         return payload
 
     def _tool_names(self):
-        tools = self._run(self.server.list_tools())
+        request_handlers = getattr(self.server, "request_handlers", {})
+        if types.ListToolsRequest in request_handlers:
+            request = types.ListToolsRequest(method="tools/list", params=None)
+            response = self._run(request_handlers[types.ListToolsRequest](request))
+            tools = response.root.tools
+        else:  # pragma: no cover - compatibility fallback for older SDKs
+            tools = self._run(self.server.list_tools())
         return sorted(t.name for t in tools)
 
     def test_appliance_mode_exposes_eight_tools(self):
@@ -53,7 +69,9 @@ class TestMcpApplianceServer(unittest.TestCase):
 
     def test_full_mode_preserves_rich_surface(self):
         server, _ = mcp_server._build_server(syn=self.syn)
-        names = {tool.name for tool in self._run(server.list_tools())}
+        request = types.ListToolsRequest(method="tools/list", params=None)
+        response = self._run(server.request_handlers[types.ListToolsRequest](request))
+        names = {tool.name for tool in response.root.tools}
         self.assertGreaterEqual(len(names), 21)
         self.assertIn("remember", names)
         self.assertIn("compile_context", names)

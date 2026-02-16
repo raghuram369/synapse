@@ -528,7 +528,7 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
 
                 async with db_lock:
                     entries = []
-                    for item in syn.timeline(topic=topic.lower() if topic else None):
+                    for item in syn.timeline(concept=topic.lower() if topic else None):
                         memory = item.get("memory")
                         if memory is None:
                             continue
@@ -698,4 +698,3 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
