@@ -62,3 +62,45 @@ class EgressGuard:
         for pattern, pii_type in self._patterns:
             cleaned = pattern.sub(f"[REDACTED_{pii_type}]", cleaned)
         return cleaned
+
+
+class SensitiveContentDetector:
+    """Heuristic detector for contextually sensitive content."""
+
+    _HEALTH_PATTERNS: List[Pattern[str]] = [
+        re.compile(r"\b(?:diagnosed|diagnosis|treatment|medication|prescription|therapy)\b", re.I),
+        re.compile(r"\b(?:anxiety|depression|ptsd|diabetes|cancer|asthma|adhd|autism)\b", re.I),
+        re.compile(r"\b(?:hospital|clinic|surgeon|psychiatrist|oncologist|medical record)\b", re.I),
+    ]
+    _SCHOOL_PATTERNS: List[Pattern[str]] = [
+        re.compile(r"\b(?:elementary|middle|high)\s+school\b", re.I),
+        re.compile(r"\b(?:kindergarten|daycare|preschool)\b", re.I),
+        re.compile(r"\b(?:my|our)\s+(?:kid|kids|child|children|daughter|son)\b.*\b(?:school|class|teacher)\b", re.I),
+    ]
+    _ADDRESS_PATTERNS: List[Pattern[str]] = [
+        re.compile(
+            r"\b\d{1,6}[A-Za-z]?\s+[A-Za-z0-9.'-]+\s+(?:street|st|avenue|ave|road|rd|lane|ln|drive|dr|boulevard|blvd|court|ct|place|pl|way|circle|cir)\b",
+            re.I,
+        ),
+        re.compile(r"\b(?:my|our)\s+(?:home|house|apartment|apt)\s+(?:address|is)\b", re.I),
+    ]
+    _RELATIONSHIP_PATTERNS: List[Pattern[str]] = [
+        re.compile(r"\b(?:my|our)\s+(?:wife|husband|partner|girlfriend|boyfriend|ex|spouse)\b", re.I),
+        re.compile(r"\b(?:my|our)\s+(?:kid|kids|child|children|daughter|son)\b", re.I),
+        re.compile(r"\b(?:custody|divorce|separation|pregnant|pregnancy|fertility)\b", re.I),
+    ]
+
+    @classmethod
+    def detect(cls, text: str) -> bool:
+        if not isinstance(text, str) or not text.strip():
+            return False
+        for patterns in (
+            cls._HEALTH_PATTERNS,
+            cls._SCHOOL_PATTERNS,
+            cls._ADDRESS_PATTERNS,
+            cls._RELATIONSHIP_PATTERNS,
+        ):
+            for pattern in patterns:
+                if pattern.search(text):
+                    return True
+        return False

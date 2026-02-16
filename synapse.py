@@ -48,6 +48,7 @@ from contradictions import ContradictionDetector
 from exceptions import SynapseValidationError
 from extractor import extract_facts
 from graph_retrieval import GraphRetriever
+from scope_policy import ScopePolicy
 from triples import TripleIndex, extract_triples
 from checkpoints import Checkpoint, CheckpointManager
 from indexes import (
@@ -75,6 +76,7 @@ MEMORY_TYPES: Set[str] = {
     "semantic",
 }
 MEMORY_SCOPES = ("public", "shared", "private")
+_SHARED_WITH_UNSET = object()
 MEMORY_LEVELS: Set[str] = {"instance", "pattern", "profile"}
 EDGE_TYPES: Set[str] = {
     "caused_by", "contradicts", "reminds_of", "supports",
@@ -107,6 +109,8 @@ class Memory:
     memory_type: str = "fact"
     memory_level: str = "instance"
     scope: str = "private"
+    shared_with: Optional[List[str]] = None
+    sensitive: bool = False
     strength: float = 1.0
     access_count: int = 0
     created_at: float = 0.0
@@ -144,8 +148,9 @@ class Synapse:
         results = s.recall("dietary preferences")
     """
 
-    def __init__(self, path: str = ":memory:"):
+    def __init__(self, path: str = ":memory:", scope_policy: Optional[ScopePolicy] = None):
         self.path = path
+        self.scope_policy = scope_policy
         self._entity_normalizer = ENTITY_NORMALIZER
         
         # Initialize storage
@@ -276,6 +281,8 @@ class Synapse:
         valid_from: Optional[Any] = None,
         valid_to: Optional[Any] = None,
         deduplicate: bool = True,
+        shared_with: Optional[List[str]] = None,
+        sensitive: bool = False,
         extract: bool = False,
     ) -> Memory:
         """Store a new memory with optional fact extraction and deduplication.
@@ -288,6 +295,7 @@ class Synapse:
                 ``target_id``, ``edge_type``, and optionally ``weight``).
             metadata: Arbitrary JSON-serialisable metadata.
             episode: Optional episode name to group this memory into.
+            shared_with: Optional group/principal IDs for shared memories.
             deduplicate: If *True*, create *supersedes* edges to similar
                 existing memories.
             extract: If *True*, use an LLM to split *content* into
@@ -317,22 +325,26 @@ class Synapse:
 
         memory_type = str(memory_type)
         scope = self._normalize_scope(scope)
-        content, metadata, scope = self._apply_policy_rules(
+        content, metadata, scope, sensitive = self._apply_policy_rules(
             content=content,
             metadata=metadata,
             memory_type=memory_type,
             scope=scope,
+            sensitive=bool(sensitive),
         )
+        normalized_shared_with = self._normalize_shared_with(shared_with)
 
         if extract:
             memory = self._remember_with_extraction(
                 content, memory_type, scope, links, metadata, episode, deduplicate, now,
                 observed_ts, valid_from_ts, valid_to_ts,
+                normalized_shared_with, sensitive,
             )
         else:
             memory = self._remember_single_content(
                 content, memory_type, scope, links, metadata, episode, deduplicate, now,
                 observed_ts, valid_from_ts, valid_to_ts,
+                normalized_shared_with, sensitive,
             )
 
         if getattr(self, '_is_sleeping', False):
@@ -355,14 +367,15 @@ class Synapse:
         metadata: Optional[Dict[str, Any]],
         memory_type: str,
         scope: str,
-    ) -> tuple[str, Optional[Dict[str, Any]], str]:
+        sensitive: bool = False,
+    ) -> tuple[str, Optional[Dict[str, Any]], str, bool]:
         """Apply active policy hooks before storing memory content.
 
-        Returns sanitized content, metadata and scope.
+        Returns sanitized content, metadata, scope and sensitive flag.
         """
         policy = self.policy_manager.get_active()
         if not policy:
-            return content, metadata, scope
+            return content, metadata, scope, sensitive
 
         metadata_dict = dict(metadata or {}) if isinstance(metadata, dict) else {}
         tags = set(self._coerce_tags(metadata_dict.get("tags")))
@@ -420,7 +433,14 @@ class Synapse:
         elif metadata_dict:
             metadata = metadata_dict
 
-        return content, metadata, resolved_scope
+        # Auto-flag sensitive based on policy sensitive_tags
+        sensitive_tags = set(policy.get("sensitive_tags", [
+            "health", "financial", "legal", "children", "immigration",
+        ]))
+        if tags and sensitive_tags and tags.intersection(sensitive_tags):
+            sensitive = True
+
+        return content, metadata, resolved_scope, bool(sensitive)
 
     def _apply_policy_retention(self) -> Dict[str, Any]:
         """Run active policy retention rules."""
@@ -612,15 +632,103 @@ class Synapse:
     def _is_scope_visible(memory_scope: str, requested_scope: str) -> bool:
         """Return True when a memory is visible from requested scope."""
         return MEMORY_SCOPES.index(memory_scope) <= MEMORY_SCOPES.index(requested_scope)
+
+    @staticmethod
+    def _normalize_shared_with(shared_with: Optional[List[str]]) -> Optional[List[str]]:
+        """Validate and normalize group/principal IDs for shared memory visibility."""
+        if shared_with is None:
+            return None
+        if not isinstance(shared_with, list):
+            raise SynapseValidationError("shared_with must be a list of strings or None")
+        normalized: List[str] = []
+        for value in shared_with:
+            if not isinstance(value, str):
+                raise SynapseValidationError("shared_with entries must be strings")
+            item = value.strip()
+            if not item:
+                continue
+            normalized.append(item)
+        return normalized or None
+
+    @staticmethod
+    def _parse_shared_with(raw_shared_with: Any) -> Optional[List[str]]:
+        """Parse persisted shared_with payload into list form."""
+        if raw_shared_with is None:
+            return None
+        if isinstance(raw_shared_with, list):
+            normalized = [
+                item.strip()
+                for item in raw_shared_with
+                if isinstance(item, str) and item.strip()
+            ]
+            return normalized or None
+        if isinstance(raw_shared_with, str):
+            if not raw_shared_with:
+                return None
+            try:
+                parsed = json.loads(raw_shared_with)
+            except json.JSONDecodeError:
+                return None
+            if not isinstance(parsed, list):
+                return None
+            normalized = [
+                item.strip()
+                for item in parsed
+                if isinstance(item, str) and item.strip()
+            ]
+            return normalized or None
+        return None
+
+    def _shared_scope_match(self, memory_data: Dict[str, Any], caller_groups: Optional[List[str]]) -> bool:
+        """Apply shared-with filter for shared scope requests."""
+        memory_scope = self._memory_scope(memory_data)
+        if memory_scope != "shared" or caller_groups is None:
+            return True
+        memory_groups = self._parse_shared_with(memory_data.get("shared_with"))
+        if memory_groups is None:
+            return True
+        caller_group_set = {group for group in caller_groups if isinstance(group, str) and group.strip()}
+        if not caller_group_set:
+            return False
+        return any(group in caller_group_set for group in memory_groups)
     
-    def bulk_set_scope(self, memory_ids: List[int], scope: str) -> int:
+    def bulk_set_scope(
+        self,
+        memory_ids: List[int],
+        scope: str,
+        shared_with: Any = _SHARED_WITH_UNSET,
+    ) -> int:
         """Update the scope of multiple memories at once. Returns count updated."""
         target = self._normalize_scope(scope)
+        normalized_shared_with = (
+            self._normalize_shared_with(shared_with)
+            if shared_with is not _SHARED_WITH_UNSET
+            else _SHARED_WITH_UNSET
+        )
         updated = 0
         for mid in memory_ids:
             if mid in self.store.memories:
-                self.store.memories[mid]['scope'] = target
-                self.store.update_memory(mid, {'scope': target})
+                updates: Dict[str, Any] = {'scope': target}
+                if normalized_shared_with is not _SHARED_WITH_UNSET:
+                    updates['shared_with'] = (
+                        json.dumps(normalized_shared_with)
+                        if normalized_shared_with is not None
+                        else None
+                    )
+                self.store.memories[mid].update(updates)
+                self.store.update_memory(mid, updates)
+                updated += 1
+        if updated:
+            self.flush()
+        return updated
+
+    def bulk_set_sensitive(self, memory_ids: List[int], sensitive: bool = True) -> int:
+        """Update the sensitive flag of multiple memories at once. Returns count updated."""
+        updated = 0
+        for mid in memory_ids:
+            if mid in self.store.memories:
+                self.store.memories[mid]['sensitive'] = bool(sensitive)
+                self.store.update_memory(mid, {'sensitive': bool(sensitive)})
                 updated += 1
         if updated:
             self.flush()
@@ -629,7 +737,8 @@ class Synapse:
     def _remember_with_extraction(self, content: str, memory_type: str, scope: str,
                                   links: Optional[List], metadata: Optional[Dict],
                                   episode: Optional[str], deduplicate: bool, now: float,
-                                  observed_at: Optional[float], valid_from: Optional[float], valid_to: Optional[float]) -> Memory:
+                                  observed_at: Optional[float], valid_from: Optional[float], valid_to: Optional[float],
+                                  shared_with: Optional[List[str]], sensitive: bool = False) -> Memory:
         """Handle memory storage with fact extraction."""
         try:
             # Extract facts using LLM
@@ -640,6 +749,7 @@ class Synapse:
                 return self._remember_single_content(
                     content, memory_type, scope, links, metadata, episode, deduplicate, now,
                     observed_at, valid_from, valid_to,
+                    shared_with, sensitive,
                 )
 
             # Create memories for each extracted fact
@@ -660,6 +770,7 @@ class Synapse:
                 fact_memory = self._remember_single_content(
                     fact, memory_type, scope, None, fact_metadata, episode, deduplicate, now,
                     observed_at, valid_from, valid_to,
+                    shared_with, sensitive,
                 )
                 fact_memories.append(fact_memory)
                 fact_ids.append(fact_memory.id)
@@ -689,6 +800,7 @@ class Synapse:
             return self._remember_single_content(
                 content, memory_type, scope, links, metadata, episode, deduplicate, now,
                 observed_at, valid_from, valid_to,
+                shared_with, sensitive,
             )
 
     def register_alias(self, alias: str, canonical: str) -> None:
@@ -698,7 +810,8 @@ class Synapse:
     def _remember_single_content(self, content: str, memory_type: str, scope: str,
                                  links: Optional[List], metadata: Optional[Dict],
                                  episode: Optional[str], deduplicate: bool, now: float,
-                                 observed_at: Optional[float], valid_from: Optional[float], valid_to: Optional[float]) -> Memory:
+                                 observed_at: Optional[float], valid_from: Optional[float], valid_to: Optional[float],
+                                 shared_with: Optional[List[str]], sensitive: bool = False) -> Memory:
         """Store a single piece of content as a memory (extracted from original remember logic)."""
         existing_memories = [
             self._memory_data_to_object(memory_data)
@@ -721,6 +834,7 @@ class Synapse:
             'memory_type': memory_type,
             'memory_level': 'instance',
             'scope': scope,
+            'sensitive': bool(sensitive),
             'strength': 1.0,
             'access_count': 0,
             'created_at': now,
@@ -728,6 +842,7 @@ class Synapse:
             'observed_at': observed_at,
             'valid_from': valid_from,
             'valid_to': valid_to,
+            'shared_with': json.dumps(shared_with) if shared_with is not None else None,
             'metadata': json.dumps(metadata or {}),
             'consolidated': False,
             'summary_of': json.dumps([])
@@ -814,6 +929,8 @@ class Synapse:
             memory_type=memory_type,
             memory_level='instance',
             scope=scope,
+            shared_with=shared_with,
+            sensitive=bool(sensitive),
             strength=1.0,
             access_count=0,
             created_at=now,
@@ -886,7 +1003,8 @@ class Synapse:
                show_disputes: bool = False,
                exclude_conflicted: bool = False,
                temporal: Optional[str] = None,
-               scope: str = "private") -> List[Memory]:
+               scope: str = "private",
+               caller_groups: Optional[List[str]] = None) -> List[Memory]:
         """
         Two-Stage Recall with adaptive blending (ported from V1):
           Stage 1A: BM25 word-index candidates  
@@ -895,9 +1013,21 @@ class Synapse:
         """
         now = time.time()
         requested_scope = self._normalize_scope(scope)
+        if self.scope_policy is not None:
+            requested_scope = self.scope_policy.enforce(requested_scope)
+        caller_groups = self._normalize_shared_with(caller_groups)
 
         def _scope_match(memory_data: Dict[str, Any]) -> bool:
-            return self._is_scope_visible(self._memory_scope(memory_data), requested_scope)
+            # Sensitive memories are ONLY visible in private scope
+            if bool(memory_data.get('sensitive', False)) and requested_scope != "private":
+                return False
+            return (
+                self._is_scope_visible(self._memory_scope(memory_data), requested_scope)
+                and (
+                    requested_scope != "shared"
+                    or self._shared_scope_match(memory_data, caller_groups)
+                )
+            )
 
         def _id_visible(memory_id: Optional[int]) -> bool:
             if not isinstance(memory_id, int):
@@ -966,7 +1096,8 @@ class Synapse:
                                    show_disputes=show_disputes,
                                    exclude_conflicted=exclude_conflicted,
                                    temporal=None,
-                                   scope=requested_scope)
+                                   scope=requested_scope,
+                                   caller_groups=caller_groups)
                 if not base:
                     return []
                 head = base[0]
@@ -1446,13 +1577,18 @@ class Synapse:
         budget: int = 4000,
         policy: str = "balanced",
         scope: str = "private",
+        caller_groups: Optional[List[str]] = None,
     ) -> ContextPack:
         """Compile retrieved memories, graph context and summaries into a ContextPack."""
+        resolved_scope = self._normalize_scope(scope)
+        if self.scope_policy is not None:
+            resolved_scope = self.scope_policy.enforce(resolved_scope)
         return ContextCompiler(self).compile_context(
             query=query,
             budget=budget,
             policy=policy,
-            scope=scope,
+            scope=resolved_scope,
+            caller_groups=caller_groups,
         )
 
     def create_card(self, query: str, budget: int = 2000, policy: str = "balanced") -> ContextCard:
@@ -1469,6 +1605,8 @@ class Synapse:
             memory_type=memory_data['memory_type'],
             memory_level=memory_data.get('memory_level', 'instance'),
             scope=self._memory_scope(memory_data),
+            shared_with=self._parse_shared_with(memory_data.get("shared_with")),
+            sensitive=bool(memory_data.get('sensitive', False)),
             strength=memory_data['strength'],
             access_count=memory_data['access_count'],
             created_at=memory_data['created_at'],

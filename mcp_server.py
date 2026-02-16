@@ -134,6 +134,22 @@ def _normalize_metadata(raw_metadata: Any) -> Dict[str, Any]:
     return {}
 
 
+def _normalize_string_list(value: Any, *, field: str) -> Optional[List[str]]:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError(f"{field} must be an array of strings")
+    normalized: List[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise ValueError(f"{field} entries must be strings")
+        text = item.strip()
+        if not text:
+            continue
+        normalized.append(text)
+    return normalized or None
+
+
 def _filter_text_payload(value: Any, guard: EgressGuard) -> Any:
     if isinstance(value, str):
         return guard.filter_context(value)
@@ -174,6 +190,12 @@ def _tool_schema_remember() -> Dict[str, Any]:
             "metadata": {"type": "object", "default": {}, "description": "Arbitrary JSON metadata."},
             "episode": {"type": "string", "default": "", "description": "Optional episode name/group."},
             "scope": {"type": "string", "enum": list(ALLOWED_SCOPES), "default": "private"},
+            "shared_with": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional group/principal IDs for shared memories.",
+            },
+            "sensitive": {"type": "boolean", "default": False, "description": "Hard privacy flag — sensitive memories are never returned for non-private scope."},
         },
         "required": ["content"],
     }
@@ -191,6 +213,11 @@ def _tool_schema_recall() -> Dict[str, Any]:
             "show_disputes": {"type": "boolean", "default": False, "description": "Include unresolved contradiction disputes per memory."},
             "exclude_conflicted": {"type": "boolean", "default": False, "description": "Filter out memories with unresolved contradictions."},
             "scope": {"type": "string", "enum": list(ALLOWED_SCOPES), "default": "private"},
+            "caller_groups": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional caller group/principal IDs for shared scope filtering.",
+            },
         },
         "required": ["query"],
     }
@@ -308,6 +335,11 @@ def _tool_schema_compile_context() -> Dict[str, Any]:
                 "default": "balanced",
             },
             "scope": {"type": "string", "enum": list(ALLOWED_SCOPES), "default": "private"},
+            "caller_groups": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional caller group/principal IDs for shared scope filtering.",
+            },
         },
         "required": ["query"],
     }
@@ -327,6 +359,22 @@ def _tool_schema_set_scope() -> Dict[str, Any]:
             },
         },
         "required": ["scope"],
+    }
+
+
+def _tool_schema_mark_sensitive() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "memory_ids": {
+                "type": "array",
+                "items": {"type": "integer", "minimum": 1},
+                "description": "Memory IDs to update.",
+            },
+            "sensitive": {"type": "boolean", "default": True, "description": "Set or clear the sensitive flag."},
+        },
+        "required": ["memory_ids"],
     }
 
 
@@ -410,6 +458,11 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                 name="set_scope",
                 description="Bulk update memory scope labels (public/shared/private).",
                 inputSchema=_tool_schema_set_scope(),
+            ),
+            types.Tool(
+                name="mark_sensitive",
+                description="Bulk set/clear sensitive flag on memories. Sensitive memories are never returned for non-private scope.",
+                inputSchema=_tool_schema_mark_sensitive(),
             ),
             types.Tool(
                 name="gdpr_delete",
@@ -586,6 +639,8 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                     raise ValueError("episode must be a string")
                 episode = (episode or "").strip() or None
                 scope = _normalize_scope(args.get("scope", "private"))
+                shared_with = _normalize_string_list(args.get("shared_with", None), field="shared_with")
+                sensitive = bool(args.get("sensitive", False))
 
                 async with db_lock:
                     mem = syn.remember(
@@ -595,6 +650,8 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                         episode=episode,
                         extract=False,
                         scope=scope,
+                        shared_with=shared_with,
+                        sensitive=sensitive,
                     )
                     syn.flush()
 
@@ -619,6 +676,7 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
 
                 do_explain = bool(args.get("explain", False))
                 scope = _normalize_scope(args.get("scope", "private"))
+                caller_groups = _normalize_string_list(args.get("caller_groups", None), field="caller_groups")
                 requested_scope = scope
 
                 async with db_lock:
@@ -626,7 +684,8 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                                           memory_type=memory_type, explain=do_explain,
                                           show_disputes=bool(args.get("show_disputes", False)),
                                           exclude_conflicted=bool(args.get("exclude_conflicted", False)),
-                                          scope=scope)
+                                          scope=scope,
+                                          caller_groups=caller_groups)
 
                 mem_dicts = []
                 for m in memories:
@@ -736,6 +795,20 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                         "updated_memory_ids": updated_ids,
                     }
                 )
+
+            elif name == "mark_sensitive":
+                memory_ids_raw = args.get("memory_ids")
+                if not isinstance(memory_ids_raw, list):
+                    raise ValueError("memory_ids must be an array of integers")
+                memory_ids = [_as_int(mid, field="memory_ids[]") for mid in memory_ids_raw]
+                sensitive = bool(args.get("sensitive", True))
+                async with db_lock:
+                    updated = syn.bulk_set_sensitive(memory_ids, sensitive=sensitive)
+                payload = _ok_payload({
+                    "sensitive": sensitive,
+                    "updated_count": updated,
+                    "memory_ids": memory_ids,
+                })
 
             elif name == "gdpr_delete":
                 user_id = args.get("user_id", None)
@@ -910,6 +983,7 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                     policy = "balanced"
                 policy = policy.strip().lower()
                 scope = _normalize_scope(args.get("scope", "private"))
+                caller_groups = _normalize_string_list(args.get("caller_groups", None), field="caller_groups")
                 requested_scope = scope
 
                 async with db_lock:
@@ -918,6 +992,7 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                         budget=budget_i,
                         policy=policy,
                         scope=scope,
+                        caller_groups=caller_groups,
                     )
                 context_pack = pack.to_dict()
                 compact = pack.to_compact()
@@ -1113,13 +1188,22 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
     return server, db_lock
 
 
-async def _run_server(*, data_dir: str) -> None:
+async def _run_server(*, data_dir: str, scope_policy_name: Optional[str] = None) -> None:
     # Store uses "path" as a file prefix; it writes "<path>.log" and "<path>.snapshot".
     data_dir = os.path.expanduser(data_dir)
     os.makedirs(data_dir, exist_ok=True)
     db_prefix = os.path.join(data_dir, "synapse")
 
-    syn = Synapse(db_prefix)
+    from scope_policy import ScopePolicy
+    policy_name = scope_policy_name or os.environ.get("SYNAPSE_SCOPE_POLICY")
+    scope_policy = None
+    if policy_name:
+        factory = {"owner": ScopePolicy.owner, "external": ScopePolicy.external, "anonymous": ScopePolicy.anonymous}
+        if policy_name not in factory:
+            raise ValueError(f"Unknown scope policy: {policy_name}")
+        scope_policy = factory[policy_name]()
+
+    syn = Synapse(db_prefix, scope_policy=scope_policy)
     # Synapse AI Memory can optionally call a local Ollama server for embeddings; for MCP usage
     # we default this off to avoid surprising latency/timeouts. Opt-in via env var.
     if os.environ.get("SYNAPSE_MCP_ENABLE_EMBEDDINGS", "").strip() not in ("1", "true", "TRUE", "yes", "YES"):
@@ -1146,6 +1230,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         default="appliance",
         help="Tool surface to expose: full (21 tools) or appliance (8 tools).",
     )
+    parser.add_argument(
+        "--scope-policy",
+        choices=["owner", "external", "anonymous"],
+        default=None,
+        help="Runtime scope enforcement: owner (allow private), external (max shared), anonymous (max public).",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -1156,7 +1246,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     try:
         if args.mode == "full":
-            asyncio.run(_run_server(data_dir=args.data_dir))
+            asyncio.run(_run_server(data_dir=args.data_dir, scope_policy_name=args.scope_policy))
         else:
             from mcp_appliance import _run_server as _run_appliance_server
 

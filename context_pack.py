@@ -11,7 +11,7 @@ import re
 import time
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from entity_graph import extract_concepts
 
@@ -193,6 +193,7 @@ class ContextCompiler:
         budget: int = 4000,
         policy: str = "balanced",
         scope: str = "private",
+        caller_groups: Optional[List[str]] = None,
     ) -> ContextPack:
         policy_name = (policy or "balanced").lower()
         if policy_name not in self._POLICIES:
@@ -210,6 +211,7 @@ class ContextCompiler:
             temporal_boost=cfg["temporal_boost"],
             explain=True,
             scope=scope,
+            caller_groups=caller_groups,
         )
         timings["recall_ms"] = (time.perf_counter() - recall_start) * 1000.0
 
