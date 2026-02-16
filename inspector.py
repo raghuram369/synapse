@@ -91,6 +91,7 @@ canvas{width:100%;min-height:280px;border:1px solid var(--line);border-radius:8p
   <div class="tab" data-tab="contradictions">Contradictions</div>
   <div class="tab" data-tab="context">Context</div>
   <div class="tab" data-tab="sleep">Sleep</div>
+  <div class="tab" data-tab="inbox">Inbox</div>
 </div>
 
 <div class="page">
@@ -210,6 +211,28 @@ canvas{width:100%;min-height:280px;border:1px solid var(--line);border-radius:8p
   </section>
 </div>
 
+<!-- INBOX TAB -->
+<div class="tab-content" id="tab-inbox">
+  <section>
+    <h2>📥 Memory Inbox</h2>
+    <div class="two-col">
+      <div>
+        <h3>Pending Memories</h3>
+        <div id="pending-memories"></div>
+      </div>
+      <div>
+        <h3>Inbox Actions</h3>
+        <div class="controls">
+          <button onclick="refreshInbox()">🔄 Refresh</button>
+          <button onclick="approveAll()">✅ Approve All</button>
+          <button onclick="showInboxStats()">📊 Stats</button>
+        </div>
+        <div id="inbox-stats" class="small-note"></div>
+      </div>
+    </div>
+  </section>
+</div>
+
 </div><!-- .page -->
 
 <script>
@@ -229,6 +252,11 @@ document.querySelectorAll('.tab').forEach(t=>{
     document.querySelectorAll('.tab-content').forEach(x=>x.classList.remove('active'));
     t.classList.add('active');
     document.getElementById('tab-'+t.dataset.tab).classList.add('active');
+    
+    // Load data when switching to specific tabs
+    if(t.dataset.tab==='inbox'){
+      refreshInbox();
+    }
   });
 });
 
@@ -411,6 +439,71 @@ $('#concept-canvas').addEventListener('click',e=>{
     $('#graph-meta').textContent=`node=${n.id}, memories=${ids.length}, activation=${n.activation.toFixed(3)}`;return;
   }}
 });
+
+// Inbox functions
+async function refreshInbox(){
+  try{
+    const data=await getJSON('/api/inbox');
+    const area=$('#pending-memories');
+    const items=data.pending||[];
+    if(!items.length){
+      area.innerHTML='<div class="muted">📭 Inbox is empty</div>';
+      return;
+    }
+    area.innerHTML=items.map(item=>{
+      const content=item.content.substring(0,200)+(item.content.length>200?'...':'');
+      const timeStr=new Date(item.submitted_at*1000).toLocaleDateString();
+      return `<div class="card">
+        <div><strong>ID: ${item.id}</strong> · ${timeStr}</div>
+        <div class="small-note">Type: ${item.metadata?.memory_type||'fact'}</div>
+        <div>${content}</div>
+        <div style="margin-top:8px;">
+          <button onclick="approveItem('${item.id}')" class="resolve-btn">✅ Approve</button>
+          <button onclick="rejectItem('${item.id}')" class="resolve-btn">❌ Reject</button>
+          <button onclick="pinItem('${item.id}')" class="resolve-btn">📌 Pin</button>
+        </div>
+      </div>`;
+    }).join('');
+    showInboxStats(items.length);
+  }catch(e){
+    $('#pending-memories').innerHTML='<div class="muted">❌ Error loading inbox</div>';
+  }
+}
+
+async function approveItem(itemId){
+  try{
+    await postJSON('/api/inbox/approve',{item_id:itemId});
+    await refreshInbox();
+  }catch(e){alert('Failed to approve item');}
+}
+
+async function rejectItem(itemId){
+  if(!confirm('Really reject this memory?'))return;
+  try{
+    await postJSON('/api/inbox/reject',{item_id:itemId});
+    await refreshInbox();
+  }catch(e){alert('Failed to reject item');}
+}
+
+async function pinItem(itemId){
+  try{
+    await postJSON('/api/inbox/pin',{item_id:itemId});
+    await refreshInbox();
+  }catch(e){alert('Failed to pin item');}
+}
+
+async function approveAll(){
+  if(!confirm('Really approve all pending memories?'))return;
+  try{
+    await postJSON('/api/inbox/approve-all',{});
+    await refreshInbox();
+  }catch(e){alert('Failed to approve all items');}
+}
+
+function showInboxStats(count){
+  const stats=$('#inbox-stats');
+  stats.innerHTML=count?`${count} pending memories`:'Inbox is empty';
+}
 
 // Init
 async function init(){
@@ -773,6 +866,13 @@ class SynapseInspector:
                             query=(params.get("q", [""])[0] or ""),
                             budget=inspector._coerce_int_param(params.get("budget"), 2000),
                         )
+                    elif path == "/api/inbox":
+                        inbox = inspector.synapse.inbox()
+                        if inbox:
+                            pending = inbox.list_pending()
+                        else:
+                            pending = []
+                        payload = {"pending": pending}
                     else:
                         return self._send_json({"error": "Unknown API endpoint"}, status=404)
                 except Exception as exc:
@@ -800,6 +900,54 @@ class SynapseInspector:
                         policy = body.get("policy", "balanced")
                         payload = inspector._collect_compile(query=query, budget=budget, policy=policy)
                         return self._send_json(payload)
+
+                    elif path == "/api/inbox/approve":
+                        item_id = body.get("item_id")
+                        if not item_id:
+                            return self._send_json({"error": "item_id required"}, status=400)
+                        inbox = inspector.synapse.inbox()
+                        if not inbox:
+                            return self._send_json({"error": "Inbox mode not enabled"}, status=400)
+                        memory = inbox.approve(item_id)
+                        if memory:
+                            return self._send_json({"status": "approved", "memory_id": memory.id})
+                        return self._send_json({"error": "Item not found"}, status=404)
+
+                    elif path == "/api/inbox/reject":
+                        item_id = body.get("item_id")
+                        if not item_id:
+                            return self._send_json({"error": "item_id required"}, status=400)
+                        inbox = inspector.synapse.inbox()
+                        if not inbox:
+                            return self._send_json({"error": "Inbox mode not enabled"}, status=400)
+                        success = inbox.reject(item_id)
+                        if success:
+                            return self._send_json({"status": "rejected"})
+                        return self._send_json({"error": "Item not found"}, status=404)
+
+                    elif path == "/api/inbox/pin":
+                        item_id = body.get("item_id")
+                        if not item_id:
+                            return self._send_json({"error": "item_id required"}, status=400)
+                        inbox = inspector.synapse.inbox()
+                        if not inbox:
+                            return self._send_json({"error": "Inbox mode not enabled"}, status=400)
+                        memory = inbox.pin(item_id)
+                        if memory:
+                            return self._send_json({"status": "pinned", "memory_id": memory.id})
+                        return self._send_json({"error": "Item not found"}, status=404)
+
+                    elif path == "/api/inbox/approve-all":
+                        inbox = inspector.synapse.inbox()
+                        if not inbox:
+                            return self._send_json({"error": "Inbox mode not enabled"}, status=400)
+                        pending = inbox.list_pending()
+                        approved = 0
+                        for item in pending:
+                            result = inbox.approve(item["id"])
+                            if result:
+                                approved += 1
+                        return self._send_json({"status": "approved_all", "count": approved})
 
                     else:
                         return self._send_json({"error": "Unknown POST endpoint"}, status=404)

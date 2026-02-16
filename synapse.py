@@ -148,10 +148,18 @@ class Synapse:
         results = s.recall("dietary preferences")
     """
 
-    def __init__(self, path: str = ":memory:", scope_policy: Optional[ScopePolicy] = None):
+    def __init__(self, path: str = ":memory:", scope_policy: Optional[ScopePolicy] = None, 
+                 vault: Optional[str] = None, vault_manager: Optional[Any] = None,
+                 inbox_mode: bool = False, inbox_config: Optional[Dict[str, Any]] = None):
         self.path = path
         self.scope_policy = scope_policy
         self._entity_normalizer = ENTITY_NORMALIZER
+        self._vault_id = vault
+        self._user_id = None
+        self._vault_manager = vault_manager
+        self._inbox_mode = inbox_mode
+        self._inbox: Optional[Any] = None
+        self._inbox_config = inbox_config
         
         # Initialize storage
         self.store = MemoryStore(path)
@@ -203,6 +211,76 @@ class Synapse:
 
         # Persistent context card collection
         self.cards = CardDeck(cards=getattr(self.store, "cards", {}), synapse_instance=self)
+        
+        # Initialize inbox mode if enabled
+        self._inbox_pending_dir = None
+        if self._inbox_mode:
+            from memory_inbox import MemoryInbox
+            import tempfile
+            pending_dir = None
+            if self.path == ":memory:":
+                pending_dir = tempfile.mkdtemp(prefix="synapse_pending_")
+                self._inbox_pending_dir = pending_dir
+            self._inbox = MemoryInbox(
+                self,
+                pending_dir=pending_dir,
+                auto_approve_config=self._inbox_config,
+            )
+
+    def _route_to_vault(self, user_id: Optional[str] = None) -> Optional["Synapse"]:
+        """Route to appropriate vault based on user_id."""
+        if not user_id or not self._vault_manager:
+            return None
+        
+        if self._vault_id:  # Already in a vault
+            return self if self._user_id == user_id else None
+        
+        # Route to user's vault
+        return self._vault_manager.get_user_vault(user_id)
+    
+    # ─── Inbox Methods ───────────────────────────────────────────────────────
+    
+    def inbox(self) -> Optional[Any]:
+        """Get the memory inbox instance if inbox mode is enabled."""
+        return self._inbox
+    
+    def list_pending(self) -> List[Dict[str, Any]]:
+        """List all pending memories in inbox."""
+        if not self._inbox:
+            return []
+        return self._inbox.list_pending()
+    
+    def approve_memory(self, item_id: str) -> Optional[Memory]:
+        """Approve a pending memory from inbox."""
+        if not self._inbox:
+            return None
+        return self._inbox.approve(item_id)
+    
+    def reject_memory(self, item_id: str) -> bool:
+        """Reject a pending memory from inbox."""
+        if not self._inbox:
+            return False
+        return self._inbox.reject(item_id)
+    
+    def redact_memory(self, item_id: str, redacted_content: str) -> Optional[Memory]:
+        """Redact and approve a pending memory from inbox."""
+        if not self._inbox:
+            return None
+        return self._inbox.redact(item_id, redacted_content)
+    
+    def pin_memory(self, item_id: str) -> Optional[Memory]:
+        """Pin and approve a pending memory from inbox."""
+        if not self._inbox:
+            return None
+        return self._inbox.pin(item_id)
+    
+    # ─── Natural Language Forget ─────────────────────────────────────────────
+    
+    def natural_forget(self, command: str, confirm: bool = True, dry_run: bool = False) -> Dict[str, Any]:
+        """Process a natural language forget command."""
+        from natural_forget import NaturalForget
+        forget_processor = NaturalForget(self)
+        return forget_processor.process_forget_command(command, confirm, dry_run)
 
     def _reload_from_checkpoint_state(self):
         """Reload all in-memory indexes and trackers from persisted storage."""
@@ -284,6 +362,7 @@ class Synapse:
         shared_with: Optional[List[str]] = None,
         sensitive: bool = False,
         extract: bool = False,
+        user_id: Optional[str] = None,
     ) -> Memory:
         """Store a new memory with optional fact extraction and deduplication.
 
@@ -308,6 +387,35 @@ class Synapse:
             SynapseValidationError: If *content* is empty or *memory_type*
                 is not recognised.
         """
+        # Route to user vault if specified
+        if user_id:
+            vault = self._route_to_vault(user_id)
+            if vault and vault != self:
+                return vault.remember(
+                    content, memory_type, scope, links, metadata, episode,
+                    observed_at, valid_from, valid_to, deduplicate, 
+                    shared_with, sensitive, extract, user_id
+                )
+        
+        # Use inbox mode if enabled
+        if self._inbox_mode and self._inbox:
+            inbox_result = self._inbox.submit(content, memory_type, metadata, scope)
+            if inbox_result["status"] == "auto_approved" and inbox_result["memory_id"]:
+                # Return the auto-approved memory
+                memory_data = self.store.memories.get(inbox_result["memory_id"])
+                if memory_data:
+                    return self._memory_data_to_object(memory_data)
+            # If pending, create a placeholder memory object
+            elif inbox_result["status"] == "pending":
+                return Memory(
+                    id=None,  # No ID yet, as it's pending
+                    content=content,
+                    memory_type=memory_type,
+                    scope=scope,
+                    metadata={**(metadata or {}), "pending": True, "item_id": inbox_result["item_id"]},
+                    created_at=time.time()
+                )
+        
         now = time.time()
         observed_ts = self._coerce_temporal_value(observed_at, default=now)
         valid_from_ts = self._coerce_temporal_value(valid_from, default=observed_ts)
@@ -1004,13 +1112,24 @@ class Synapse:
                exclude_conflicted: bool = False,
                temporal: Optional[str] = None,
                scope: str = "private",
-               caller_groups: Optional[List[str]] = None) -> List[Memory]:
+               caller_groups: Optional[List[str]] = None,
+               user_id: Optional[str] = None) -> List[Memory]:
         """
         Two-Stage Recall with adaptive blending (ported from V1):
           Stage 1A: BM25 word-index candidates  
           Stage 1B: Concept-IDF candidates
           Stage 2: Normalize, blend, apply effective strength, edge/episode expansion
         """
+        # Route to user vault if specified
+        if user_id:
+            vault = self._route_to_vault(user_id)
+            if vault and vault != self:
+                return vault.recall(
+                    context, limit, memory_type, min_strength, retrieval_mode,
+                    temporal_boost, explain, conflict_aware, show_disputes,
+                    exclude_conflicted, temporal, scope, caller_groups
+                )
+        
         now = time.time()
         requested_scope = self._normalize_scope(scope)
         if self.scope_policy is not None:
@@ -2356,6 +2475,20 @@ class Synapse:
         """Close the database."""
         self.flush()
         self.store.close()
+        # Close vault manager if present
+        if getattr(self, '_vault_manager', None):
+            try:
+                self._vault_manager.close()
+            except Exception:
+                pass
+        # Clean up temporary inbox pending dir for :memory: mode
+        if getattr(self, '_inbox_pending_dir', None):
+            import shutil
+            try:
+                shutil.rmtree(self._inbox_pending_dir, ignore_errors=True)
+            except Exception:
+                pass
+            self._inbox_pending_dir = None
 
     def command(self, text: str) -> str:
         """Execute a /mem command and return a human-readable response."""
@@ -2777,3 +2910,19 @@ try:
     # add_watch_methods(Synapse) 
 except ImportError:
     pass  # watch.py not available yet
+
+
+# ─── Vault Management ────────────────────────────────────────────────────────
+
+def create_vault_manager(base_path: str = "./synapse_vaults") -> "VaultManager":
+    """Create a vault manager for multi-user Synapse instances."""
+    from vault_manager import VaultManager
+    return VaultManager(base_path)
+
+
+def create_synapse_with_vaults(base_path: str = "./synapse_vaults") -> Synapse:
+    """Create a Synapse instance with vault management support."""
+    from vault_manager import VaultManager
+    vault_manager = VaultManager(base_path)
+    main_synapse = Synapse(path=":memory:", vault_manager=vault_manager)
+    return main_synapse

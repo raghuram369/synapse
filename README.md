@@ -58,6 +58,34 @@ No YAML files. No config pages. Pick a preset and go.
 
 ---
 
+## 🏛️ Per-User Vaults (Multi-Tenant Isolation)
+
+```python
+from synapse import create_synapse_with_vaults
+
+# Create a vault-enabled Synapse instance
+s = create_synapse_with_vaults("./synapse_vaults")
+
+# Memories are automatically isolated by user
+s.remember("I prefer coffee", user_id="alice")
+s.remember("I prefer tea", user_id="bob")
+
+# Each user sees only their own memories
+alice_memories = s.recall("prefer", user_id="alice")  # → "coffee"
+bob_memories = s.recall("prefer", user_id="bob")      # → "tea"
+```
+
+**CLI Vault Management:**
+```bash
+synapse vault list                    # show all vaults
+synapse vault create user_alice --user-id alice
+synapse vault switch user_alice       # switch active vault
+```
+
+Perfect for multi-tenant apps, family shared agents, or team workspaces. Complete memory isolation with zero configuration.
+
+---
+
 ## Sleep Digest — Your Memory's Daily Report
 
 ![Sleep Digest](assets/sleep-digest.gif)
@@ -120,19 +148,37 @@ Everything you clip is indexed, searchable, and tagged. The clipboard watcher ru
 
 ---
 
-## Review Before Saving (Privacy Mode)
+## 📥 Smart Memory Inbox (Enhanced Review)
 
-![Review Queue](assets/review-queue.gif)
+![Memory Inbox](assets/memory-inbox.gif)
 
-```bash
-synapse review list                  # see what's pending
-synapse review approve 3             # approve one item
-synapse review approve all           # approve everything
-synapse review reject 5              # discard an item
-synapse review count                 # just the count
+```python
+# Enable inbox mode with auto-approve rules
+s = Synapse(inbox_mode=True)
+
+s.remember("I prefer coffee")          # → auto-approved (preference)
+s.remember("Maybe I should exercise")  # → pending (uncertain language)
+s.remember("I want to learn Python")  # → auto-approved (goal)
 ```
 
-Route memories through a pending inbox with `--review`. Nothing gets saved until you approve it. The inspector dashboard shows pending items too.
+**Advanced Inbox Management:**
+```bash
+synapse inbox list                   # show pending memories
+synapse inbox approve item_12345     # approve one item  
+synapse inbox reject item_12345      # reject and delete
+synapse inbox redact item_12345 "I prefer [REDACTED]"  # redact and approve
+synapse inbox pin item_12345         # pin as high importance
+synapse inbox query "exercise"       # search pending items
+```
+
+**Auto-Approve Rules:**
+- ✅ Preferences (`"I like"`, `"I prefer"`, `"I hate"`)
+- ✅ Goals (`"I want to"`, `"My goal is"`, `"I plan to"`) 
+- ✅ Clear facts (no uncertainty words like `"maybe"`, `"might"`)
+- ❌ Personal info (phone numbers, SSNs) — always requires review
+- ❌ Uncertain content (`"I'm not sure"`, `"possibly"`)
+
+The inspector dashboard shows pending items with approve/reject/redact/pin actions. Smart enough to auto-approve obvious content, cautious enough to flag sensitive or uncertain information.
 
 ---
 
@@ -188,6 +234,45 @@ s.remember("Sprint goals", scope="shared", shared_with=["team:eng"])
 Even after scope filtering + sensitive blocking, outgoing data gets scrubbed for SSNs, credit cards, emails, phone numbers, and IPs.
 
 **Three layers:** scope filtering → sensitive blocking → PII scrubbing.
+
+---
+
+## 🗣️ Natural Language Forget
+
+```bash
+# Simple fact deletion
+synapse nlforget "forget my phone number"
+
+# Topic-based bulk deletion  
+synapse nlforget "forget everything about my old job"
+synapse nlforget "delete anything related to Sarah"
+
+# Time-based cleanup
+synapse nlforget "forget memories older than 30 days"
+synapse nlforget "remove anything from before January 2024"
+
+# Memory type specific
+synapse nlforget "forget all preferences about food"
+synapse nlforget "delete my observations about work"
+
+# Preview before deleting
+synapse nlforget "forget my address" --dry-run
+```
+
+**Python API:**
+```python
+s = Synapse()
+
+# Pattern matching + fuzzy search (no LLM needed)
+result = s.natural_forget("forget everything about my ex-coworker")
+print(result["deleted_count"])  # → 7 memories deleted
+
+# Dry run to preview
+result = s.natural_forget("forget old stuff", dry_run=True)
+print(result["memories"])  # → preview of what would be deleted
+```
+
+Uses existing BM25/search to find matching memories, then confirms before deletion. Pure pattern matching — no external APIs, no LLM calls, works offline.
 
 ---
 

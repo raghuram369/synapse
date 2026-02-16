@@ -922,6 +922,160 @@ def cmd_shutdown(args, client: SynapseClient):
         sys.exit(1)
 
 
+# ─── New Feature Commands ────────────────────────────────────────────────────
+
+def cmd_nlforget(args, client: SynapseClient):
+    """Handle natural language forget commands."""
+    try:
+        result = client.request('natural_forget', {
+            'command': args.command,
+            'dry_run': args.dry_run,
+            'confirm': not args.no_confirm
+        })
+        
+        if result.get('status') == 'dry_run':
+            print(f"🔍 {_yellow('DRY RUN:')} {result['message']}")
+            if 'memories' in result:
+                print("\nMemories that would be deleted:")
+                for mem in result['memories']:
+                    print(f"  [{mem['id']}] {mem['content']}")
+            print("\nRun without --dry-run to actually delete.")
+        elif result.get('status') == 'deleted':
+            print(f"✅ {_green('Success:')} {result['message']}")
+        elif result.get('status') == 'not_found':
+            print(f"ℹ️  {_blue('Info:')} {result['message']}")
+        elif result.get('status') == 'error':
+            print(f"❌ {_red('Error:')} {result['message']}")
+        else:
+            print(f"📋 Result: {result}")
+            
+    except SynapseRequestError as e:
+        print(f"❌ Request error: {e}")
+        sys.exit(1)
+
+
+def cmd_inbox(args, client: SynapseClient):
+    """Handle inbox management commands."""
+    if not hasattr(args, 'inbox_action') or not args.inbox_action:
+        print("❌ No inbox action specified. Use 'synapse inbox -h' for help.")
+        return
+    
+    try:
+        if args.inbox_action == 'list':
+            result = client.request('list_pending', {'limit': args.limit})
+            pending = result.get('pending', [])
+            
+            if not pending:
+                print("📥 Inbox is empty")
+                return
+            
+            print(f"📥 {_bold(f'{len(pending)} pending memories:')}")
+            for item in pending:
+                item_id = item.get('id', 'unknown')
+                content = item.get('content', '')[:100]
+                submitted_at = item.get('submitted_at', 0)
+                time_str = datetime.datetime.fromtimestamp(submitted_at).strftime('%Y-%m-%d %H:%M')
+                print(f"  [{_cyan(item_id)}] {time_str} - {content}...")
+        
+        elif args.inbox_action == 'approve':
+            result = client.request('approve_memory', {'item_id': args.item_id})
+            if result.get('success'):
+                memory_id = result.get('memory_id')
+                print(f"✅ {_green('Approved')} memory {args.item_id} → memory ID {memory_id}")
+            else:
+                print(f"❌ {_red('Failed')} to approve: {result.get('error', 'Unknown error')}")
+        
+        elif args.inbox_action == 'reject':
+            result = client.request('reject_memory', {'item_id': args.item_id})
+            if result.get('success'):
+                print(f"🗑️  {_yellow('Rejected')} and deleted item {args.item_id}")
+            else:
+                print(f"❌ {_red('Failed')} to reject: {result.get('error', 'Unknown error')}")
+        
+        elif args.inbox_action == 'redact':
+            result = client.request('redact_memory', {
+                'item_id': args.item_id, 
+                'redacted_content': args.new_content
+            })
+            if result.get('success'):
+                memory_id = result.get('memory_id')
+                print(f"✏️  {_yellow('Redacted')} and approved → memory ID {memory_id}")
+            else:
+                print(f"❌ {_red('Failed')} to redact: {result.get('error', 'Unknown error')}")
+        
+        elif args.inbox_action == 'pin':
+            result = client.request('pin_memory', {'item_id': args.item_id})
+            if result.get('success'):
+                memory_id = result.get('memory_id')
+                print(f"📌 {_green('Pinned')} and approved → memory ID {memory_id}")
+            else:
+                print(f"❌ {_red('Failed')} to pin: {result.get('error', 'Unknown error')}")
+        
+        elif args.inbox_action == 'query':
+            result = client.request('query_pending', {'query': args.query, 'limit': args.limit})
+            results = result.get('results', [])
+            
+            if not results:
+                print(f"🔍 No pending memories match '{args.query}'")
+                return
+            
+            print(f"🔍 {_bold(f'{len(results)} matching pending memories:')}")
+            for item in results:
+                item_id = item.get('id', 'unknown')
+                content = item.get('content', '')[:100]
+                score = item.get('search_score', 0)
+                print(f"  [{_cyan(item_id)}] ({score} matches) {content}...")
+                
+    except SynapseRequestError as e:
+        print(f"❌ Request error: {e}")
+        sys.exit(1)
+
+
+def cmd_vault(args, client: SynapseClient):
+    """Handle vault management commands."""
+    if not hasattr(args, 'vault_action') or not args.vault_action:
+        print("❌ No vault action specified. Use 'synapse vault -h' for help.")
+        return
+    
+    try:
+        if args.vault_action == 'list':
+            result = client.request('list_vaults', {})
+            vaults = result.get('vaults', [])
+            
+            if not vaults:
+                print("🏛️  No vaults found")
+                return
+            
+            print(f"🏛️  {_bold(f'{len(vaults)} vaults:')}")
+            for vault in vaults:
+                vault_id = vault.get('vault_id', 'unknown')
+                user_id = vault.get('user_id', 'no user')
+                created_at = vault.get('created_at', 0)
+                time_str = datetime.datetime.fromtimestamp(created_at).strftime('%Y-%m-%d %H:%M')
+                print(f"  [{_cyan(vault_id)}] User: {user_id} | Created: {time_str}")
+        
+        elif args.vault_action == 'create':
+            result = client.request('create_vault', {
+                'vault_id': args.vault_id,
+                'user_id': args.user_id
+            })
+            if result.get('success'):
+                print(f"🏛️  {_green('Created')} vault '{args.vault_id}'")
+            else:
+                print(f"❌ {_red('Failed')} to create vault: {result.get('error', 'Unknown error')}")
+        
+        elif args.vault_action == 'switch':
+            result = client.request('switch_vault', {'vault_id': args.vault_id})
+            if result.get('success'):
+                print(f"🏛️  {_green('Switched')} to vault '{args.vault_id}'")
+            else:
+                print(f"❌ {_red('Failed')} to switch vault: {result.get('error', 'Unknown error')}")
+                
+    except SynapseRequestError as e:
+        print(f"❌ Request error: {e}")
+        sys.exit(1)
+
+
 # ─── Portable Format commands (standalone, no daemon needed) ─────────────────
 
 def cmd_bench(args):
@@ -2775,6 +2929,49 @@ def main():
 
     p = subparsers.add_parser('forget', help='Delete a memory')
     p.add_argument('id', type=int)
+    
+    # Natural language forget command
+    p = subparsers.add_parser('nlforget', help='Forget using plain English')
+    p.add_argument('command', help='Natural language forget command (e.g., "forget my phone number")')
+    p.add_argument('--dry-run', action='store_true', help='Preview what would be deleted without actually deleting')
+    p.add_argument('--no-confirm', action='store_true', help='Skip confirmation prompts')
+    
+    # Inbox management commands
+    inbox_parser = subparsers.add_parser('inbox', help='Memory inbox management')
+    inbox_subparsers = inbox_parser.add_subparsers(dest='inbox_action', help='Inbox actions')
+    
+    p_inbox_list = inbox_subparsers.add_parser('list', help='List pending memories')
+    p_inbox_list.add_argument('--limit', type=int, default=20, help='Maximum number of items to show')
+    
+    p_inbox_approve = inbox_subparsers.add_parser('approve', help='Approve a pending memory')
+    p_inbox_approve.add_argument('item_id', help='ID of the item to approve')
+    
+    p_inbox_reject = inbox_subparsers.add_parser('reject', help='Reject a pending memory') 
+    p_inbox_reject.add_argument('item_id', help='ID of the item to reject')
+    
+    p_inbox_redact = inbox_subparsers.add_parser('redact', help='Redact content and approve')
+    p_inbox_redact.add_argument('item_id', help='ID of the item to redact')
+    p_inbox_redact.add_argument('new_content', help='New redacted content')
+    
+    p_inbox_pin = inbox_subparsers.add_parser('pin', help='Pin and approve a memory')
+    p_inbox_pin.add_argument('item_id', help='ID of the item to pin')
+    
+    p_inbox_query = inbox_subparsers.add_parser('query', help='Search pending memories')
+    p_inbox_query.add_argument('query', help='Search query')
+    p_inbox_query.add_argument('--limit', type=int, default=10, help='Maximum number of results')
+    
+    # Vault management commands
+    vault_parser = subparsers.add_parser('vault', help='Vault management')
+    vault_subparsers = vault_parser.add_subparsers(dest='vault_action', help='Vault actions')
+    
+    p_vault_list = vault_subparsers.add_parser('list', help='List all vaults')
+    
+    p_vault_create = vault_subparsers.add_parser('create', help='Create a new vault')
+    p_vault_create.add_argument('vault_id', help='Vault ID to create')
+    p_vault_create.add_argument('--user-id', help='User ID to associate with vault')
+    
+    p_vault_switch = vault_subparsers.add_parser('switch', help='Switch to a different vault')
+    p_vault_switch.add_argument('vault_id', help='Vault ID to switch to')
 
     p = subparsers.add_parser('link', help='Link two memories')
     p.add_argument('source', type=int)
@@ -3191,6 +3388,9 @@ def main():
         'remember': cmd_remember,
         'recall': cmd_recall,
         'forget': cmd_forget,
+        'nlforget': cmd_nlforget,
+        'inbox': cmd_inbox,
+        'vault': cmd_vault,
         'link': cmd_link,
         'concepts': cmd_concepts,
         'hot-concepts': cmd_hot_concepts,
