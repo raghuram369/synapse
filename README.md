@@ -10,9 +10,9 @@ pip install synapse-ai-memory
 
 ---
 
-## Install → Configure → Remember (30 seconds)
+## Install → Setup → Remember (60 seconds)
 
-![Install Demo](assets/install.gif)
+![Onboarding Demo](assets/onboarding.gif)
 
 ```bash
 pip install synapse-ai-memory
