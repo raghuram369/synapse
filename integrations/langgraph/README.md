@@ -1,4 +1,4 @@
-# Synapse × LangGraph
+# Synapse AI Memory × LangGraph
 
 **Persistent state and cross-thread memory for LangGraph agents.** All data stays local.
 
@@ -41,7 +41,7 @@ item = store.get(("user", "prefs"), "diet")
 results = store.search(("user",), query="food preferences")
 ```
 
-## Why Synapse for LangGraph?
+## Why Synapse AI Memory for LangGraph?
 
 - **Survives restarts** — checkpoints persist to local files
 - **Cross-thread memory** — agents share knowledge without a database

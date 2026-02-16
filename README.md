@@ -1,4 +1,4 @@
-# 🧠 Synapse
+# 🧠 Synapse AI Memory
 
 **Your AI's memory. Private. Portable. Federated.**
 
@@ -36,14 +36,15 @@ print(s.hot_concepts())  # see what's top-of-mind
 s.export("my_memory.synapse")  # take it anywhere
 
 # Your AI connects
-s.serve(port=9470)  # other agents can sync with you
+s.serve(port=9470)  # federation binds to localhost by default (127.0.0.1)
+# s.serve(port=9470, expose_network=True)  # opt-in: bind to 0.0.0.0 for LAN/WAN exposure
 ```
 
 No API keys. No cloud. No setup. Just `pip install` and go.
 
 ---
 
-## Why Synapse?
+## Why Synapse AI Memory?
 
 - 🧠 **5 neuroscience-inspired indexes** — BM25 + concept graph + temporal decay + episodes + activation spreading, fused into one recall
 - ⏳ **Time-travel queries** — ask "what was true in March 2024?" and get the answer from then
@@ -115,7 +116,7 @@ Tool-use mode also supported — let your AI decide what to remember. See [`inte
 
 Our architecture didn't come from vibes. It matches what the research says works:
 
-- 📄 **"The AI Hippocampus"** (Jan 2026) — describes the exact multi-index architecture Synapse implements
+- 📄 **"The AI Hippocampus"** (Jan 2026) — describes the exact multi-index architecture Synapse AI Memory implements
 - 📄 **"Graph-based Agent Memory"** (Feb 2026) — concept graphs are the frontier; we shipped ours in v0.2
 - 📄 **"Memory in the Age of AI Agents"** (Dec 2025) — validates temporal + concept approach over pure embeddings
 
@@ -159,11 +160,13 @@ Five indexes. One fused result. No LLM in the loop.
 
 ## Quick Links
 
-| | |
-|---|---|
-| 📦 [PyPI](https://pypi.org/project/synapse-ai-memory/) | 🔌 [Integrations](integrations/) |
-| 📖 [Docs](docs/) | 🌐 [Chrome Extension](extension/) |
-| 🧪 [Tests](tests/) | 🤝 [Contributing](CONTRIBUTING.md) |
+- 📦 PyPI: `synapse-ai-memory`
+- 🧪 Tests: `tests/`
+- 🔌 Integrations: `integrations/`
+- 🧰 Examples: `examples/`
+- 📈 Benchmarks: `bench/`
+- 🔒 Security policy: `SECURITY.md`
+- 🔁 Mem0 compatibility layer (migration shim): `synapse/compat/mem0.py`
 
 ---
 

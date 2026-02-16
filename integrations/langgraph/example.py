@@ -1,5 +1,5 @@
 """
-Example: LangGraph + Synapse — Stateful agents with persistent memory.
+Example: LangGraph + Synapse AI Memory — Stateful agents with persistent memory.
 
 Shows a LangGraph agent with:
 - Checkpoint persistence (survives restarts)

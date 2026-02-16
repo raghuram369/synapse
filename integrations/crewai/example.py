@@ -1,7 +1,7 @@
 """
-Example: CrewAI + Synapse — Multi-agent crews with shared, persistent memory.
+Example: CrewAI + Synapse AI Memory — Multi-agent crews with shared, persistent memory.
 
-Shows agents sharing knowledge via Synapse, with federation for
+Shows agents sharing knowledge via Synapse AI Memory, with federation for
 multi-crew collaboration. All memory stays local.
 
 Requirements:

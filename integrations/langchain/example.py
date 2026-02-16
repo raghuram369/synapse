@@ -1,5 +1,5 @@
 """
-Example: LangChain + Synapse — AI with persistent, private memory.
+Example: LangChain + Synapse AI Memory — AI with persistent, private memory.
 
 This shows a conversational chain that remembers across sessions,
 with all memory stored locally. No cloud. No API calls for storage.

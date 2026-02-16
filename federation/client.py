@@ -12,7 +12,7 @@ from federation.memory_object import FederatedMemory
 
 
 class SyncClient:
-    """Client for syncing with a remote Synapse node over HTTP."""
+    """Client for syncing with a remote Synapse AI Memory node over HTTP."""
 
     def __init__(self, store: FederatedStore, timeout: float = 30.0):
         self.store = store

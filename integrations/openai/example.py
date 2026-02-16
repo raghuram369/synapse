@@ -1,5 +1,5 @@
 """
-Example: ChatGPT + Synapse — GPT with persistent private memory.
+Example: ChatGPT + Synapse AI Memory — GPT with persistent private memory.
 
 Your data stays local. Only inference calls go to OpenAI.
 

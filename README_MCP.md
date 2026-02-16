@@ -1,6 +1,6 @@
-# Synapse MCP Server (Claude Desktop)
+# Synapse AI Memory MCP Server (Claude Desktop)
 
-This repository includes an MCP (Model Context Protocol) server that exposes Synapse as Claude Desktop tools over stdio.
+This repository includes an MCP (Model Context Protocol) server that exposes Synapse AI Memory as Claude Desktop tools over stdio.
 
 ## Files
 
@@ -21,7 +21,7 @@ python3 -m pip install mcp
 python3 mcp_server.py --data-dir ~/.synapse
 ```
 
-Synapse will persist to:
+Synapse AI Memory will persist to:
 
 - `~/.synapse/synapse.log`
 - `~/.synapse/synapse.snapshot`

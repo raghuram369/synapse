@@ -1,4 +1,4 @@
-# Synapse × LangChain
+# Synapse AI Memory × LangChain
 
 **Privacy-first memory for LangChain chains and agents.** Your data stays local. No cloud vector DB. No API calls for storage.
 
@@ -23,7 +23,7 @@ memory = SynapseMemory(synapse=syn, memory_key="context")
 chain = LLMChain(llm=llm, prompt=prompt, memory=memory)
 ```
 
-Unlike `ConversationBufferMemory`, Synapse recalls *semantically relevant* memories — not just the last N messages.
+Unlike `ConversationBufferMemory`, Synapse AI Memory recalls *semantically relevant* memories — not just the last N messages.
 
 ### `SynapseChatMessageHistory` — Persistent chat history
 
@@ -53,16 +53,12 @@ chain = (
 
 Combines BM25 + concept graphs + optional local embeddings (Ollama). No external vector DB needed.
 
-## Why Synapse over Chroma/Pinecone/Weaviate?
+## Why Synapse AI Memory?
 
-| Feature | Synapse | Cloud Vector DBs |
-|---------|---------|-------------------|
-| Privacy | 100% local | Data leaves your machine |
-| Dependencies | Zero | SDK + API keys |
-| Search | BM25 + concepts + embeddings | Embeddings only |
-| Temporal decay | Built-in | Manual |
-| Federation | Peer-to-peer sync | Vendor lock-in |
-| Cost | Free | Per-query pricing |
+- Private by default: local-first storage and recall
+- Strong retrieval: BM25 + concept graphs + optional local embeddings (Ollama)
+- Time-aware behavior: temporal decay and supersession support
+- Portable and federated: `.synapse` exports plus peer-to-peer sync
 
 ## Run the example
 

@@ -1,4 +1,4 @@
-"""LangGraph integration for Synapse — state persistence and cross-thread memory."""
+"""LangGraph integration for Synapse AI Memory — state persistence and cross-thread memory."""
 
 from .checkpointer import SynapseCheckpointer
 from .memory_store import SynapseStore

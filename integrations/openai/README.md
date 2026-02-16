@@ -1,4 +1,4 @@
-# Synapse × OpenAI / ChatGPT
+# Synapse AI Memory × OpenAI / ChatGPT
 
 **Persistent memory for GPT conversations.** Your data stays local — only inference calls go to OpenAI.
 

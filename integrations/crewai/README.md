@@ -1,4 +1,4 @@
-# Synapse × CrewAI
+# Synapse AI Memory × CrewAI
 
 **Shared, persistent memory for multi-agent crews.** Privacy-first. Federation for multi-crew collaboration.
 

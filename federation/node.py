@@ -1,4 +1,4 @@
-"""SynapseNode — the high-level API for a federated memory peer."""
+"""SynapseNode — the high-level API for a Synapse AI Memory federated peer."""
 
 from __future__ import annotations
 import time
@@ -114,8 +114,22 @@ class SynapseNode:
 
     # ── Network operations ────────────────────────────────────
 
-    def listen(self, port: int = 9470, host: str = "0.0.0.0"):
-        """Start the HTTP server for incoming sync requests."""
+    def listen(self, port: int = 9470, host: str = "127.0.0.1", expose_network: bool = False):
+        """Start the HTTP server for incoming sync requests.
+
+        Security:
+            By default, Synapse AI Memory federation binds to localhost only.
+            To bind to a non-loopback interface (including `0.0.0.0`), you must
+            explicitly opt in with `expose_network=True`.
+        """
+        loopback_hosts = {"127.0.0.1", "localhost", "::1"}
+        if expose_network and host in loopback_hosts:
+            host = "0.0.0.0"
+        if not expose_network and host not in loopback_hosts:
+            raise ValueError(
+                "Refusing to bind federation server to a non-loopback host by default. "
+                "Pass expose_network=True to explicitly opt in."
+            )
         self._server = SynapseServer(self.store, host, port, auth_token=self.auth_token)
         self._server.start()
 

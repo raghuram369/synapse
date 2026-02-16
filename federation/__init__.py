@@ -1,4 +1,4 @@
-"""Federation layer — Git-like memory sync between Synapse agents."""
+"""Federation layer — Git-like memory sync between Synapse AI Memory agents."""
 
 from .node import SynapseNode
 from .server import SynapseServer

@@ -1,7 +1,7 @@
 """
-Example: Claude + Synapse — Conversations that remember across sessions.
+Example: Claude + Synapse AI Memory — Conversations that remember across sessions.
 
-Your data stays local. Claude handles the thinking, Synapse handles the memory.
+Your data stays local. Claude handles the thinking, Synapse AI Memory handles the memory.
 No Anthropic API calls for storage — only for inference.
 
 Requirements:

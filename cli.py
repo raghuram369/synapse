@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unified CLI for the Synapse memory engine.
+"""Unified CLI for the Synapse AI Memory engine.
 
 Sub-commands cover the core engine, portable format, and federation.
 """
@@ -430,14 +430,25 @@ def cmd_diff(args):
 
 def cmd_serve(args):
     from federation.node import SynapseNode
+    loopback_hosts = {"127.0.0.1", "localhost", "::1"}
+    host = args.host
+    if getattr(args, "expose_network", False) and host in loopback_hosts:
+        host = "0.0.0.0"
+    if (not getattr(args, "expose_network", False)) and host not in loopback_hosts:
+        print(
+            "Error: refusing to bind federation server to a non-loopback host by default.\n"
+            "       Re-run with --expose-network to explicitly opt in, or pass --fed-host 127.0.0.1.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     node = SynapseNode(node_id=args.node_id, path=args.data or ":memory:",
                        auth_token=args.token)
     for ns in (args.share or []):
         node.share(ns)
-    node.listen(port=args.port, host=args.host)
+    node.listen(port=args.port, host=host, expose_network=getattr(args, "expose_network", False))
     if args.discover:
         node.start_discovery(port=args.port)
-    print(f"Synapse node '{args.node_id}' listening on {args.host}:{args.port}")
+    print(f"Synapse AI Memory node '{args.node_id}' listening on {host}:{args.port}")
     print(f"  Memories: {len(node.store.memories)}")
     print(f"  Shared namespaces: {sorted(node.store.shared_namespaces) or '(all)'}")
     try:
@@ -513,7 +524,7 @@ def cmd_peers_fed(args):
 def main():
     parser = argparse.ArgumentParser(
         prog='synapse',
-        description='Synapse — AI Memory Engine with Portable Format & Federation'
+        description='Synapse AI Memory — Private, portable AI memory engine with federation'
     )
     parser.add_argument('--host', default='127.0.0.1', help='Daemon host')
     parser.add_argument('--port', type=int, default=7654, help='Daemon port')
@@ -582,15 +593,15 @@ def main():
     # ── Temporal fact chain commands (standalone) ──
     p = subparsers.add_parser('history', help='Show fact evolution history')
     p.add_argument('query', help='Query to find the fact')
-    p.add_argument('--db', help='Synapse database path')
+    p.add_argument('--db', help='Synapse AI Memory database path')
 
     p = subparsers.add_parser('timeline', help='Show timeline of fact changes')
     p.add_argument('--concept', default=None, help='Filter by concept')
-    p.add_argument('--db', help='Synapse database path')
+    p.add_argument('--db', help='Synapse AI Memory database path')
 
     # ── Consolidate command (standalone) ──
     p = subparsers.add_parser('consolidate', help='Consolidate similar memories')
-    p.add_argument('--db', help='Synapse database path')
+    p.add_argument('--db', help='Synapse AI Memory database path')
     p.add_argument('--dry-run', action='store_true', help='Preview without modifying')
     p.add_argument('--min-cluster', type=int, default=3, help='Min cluster size')
     p.add_argument('--threshold', type=float, default=0.7, help='Similarity threshold')
@@ -599,7 +610,7 @@ def main():
     # ── Portable Format commands ──
     p = subparsers.add_parser('export', help='Export database to .synapse file')
     p.add_argument('output', help='Output .synapse file path')
-    p.add_argument('--db', help='Synapse database path')
+    p.add_argument('--db', help='Synapse AI Memory database path')
     p.add_argument('--since', help='Export since date (ISO)')
     p.add_argument('--until', help='Export until date (ISO)')
     p.add_argument('--concepts', help='Filter by concepts (comma-separated)')
@@ -630,7 +641,12 @@ def main():
     # ── Federation commands ──
     p = subparsers.add_parser('serve', help='Start federation server')
     p.add_argument('--fed-port', '-p', type=int, default=9470, dest='port')
-    p.add_argument('--fed-host', default='0.0.0.0', dest='host')
+    p.add_argument('--fed-host', default='127.0.0.1', dest='host', help='Bind address (default: 127.0.0.1)')
+    p.add_argument(
+        '--expose-network',
+        action='store_true',
+        help='Opt-in: allow binding federation to a non-loopback interface (default binds localhost only)',
+    )
     p.add_argument('--share', nargs='*', help='Namespaces to share')
     p.add_argument('--discover', action='store_true')
     p.add_argument('--token', help='Auth token')
@@ -683,7 +699,7 @@ def main():
         client.connect()
     except SynapseConnectionError as e:
         print(f"❌ Connection failed: {e}")
-        print(f"   Make sure the Synapse daemon is running on {args.host}:{args.port}")
+        print(f"   Make sure the Synapse AI Memory daemon is running on {args.host}:{args.port}")
         sys.exit(1)
 
     daemon_commands = {

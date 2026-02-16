@@ -1,5 +1,5 @@
 """
-Synapse — A neuroscience-inspired memory database engine for AI agents.
+Synapse AI Memory — A neuroscience-inspired memory database engine for AI agents.
 
 Pure Python, zero external dependencies, no SQL.  Provides BM25 keyword
 search, concept-graph expansion, optional local embeddings (Ollama), and
@@ -7,6 +7,19 @@ an append-only log + snapshot persistence layer.
 """
 
 from __future__ import annotations
+
+#
+# NOTE: This repository historically exposed `synapse` as a single-module API
+# (`synapse.py`). Some users want `synapse.compat.*` imports (Mem0 shims, etc.).
+# A regular module cannot have submodules, but the import system treats any
+# module with a `__path__` as a package. We set `__path__` to point at the
+# adjacent `synapse/` directory (if present) so `import synapse.compat` works
+# without breaking the existing `import synapse` module API.
+#
+import os as _os
+_compat_pkg_dir = _os.path.join(_os.path.dirname(__file__), "synapse")
+if _os.path.isdir(_compat_pkg_dir):
+    __path__ = [_compat_pkg_dir]  # type: ignore[name-defined]
 
 import json
 import logging
@@ -1274,13 +1287,32 @@ class Synapse:
     #  Federation (Phase 3) — serve / push / pull / sync / peers
     # ════════════════════════════════════════════════════════════
 
-    def serve(self, port: int = 9470, host: str = "0.0.0.0",
-              node_id: Optional[str] = None, auth_token: Optional[str] = None):
+    def serve(
+        self,
+        port: int = 9470,
+        host: str = "127.0.0.1",
+        node_id: Optional[str] = None,
+        auth_token: Optional[str] = None,
+        expose_network: bool = False,
+    ):
         """Start a federation HTTP server for peer-to-peer memory sync.
 
         Example:
             s.serve(port=9470)
+
+        Security:
+            By default, Synapse AI Memory binds federation to localhost only. To
+            bind to a non-loopback interface (including `0.0.0.0`), you must
+            explicitly opt in with `expose_network=True`.
         """
+        loopback_hosts = {"127.0.0.1", "localhost", "::1"}
+        if expose_network and host in loopback_hosts:
+            host = "0.0.0.0"
+        if not expose_network and host not in loopback_hosts:
+            raise ValueError(
+                "Refusing to bind federation server to a non-loopback host by default. "
+                "Pass expose_network=True to explicitly opt in."
+            )
         from federation.node import SynapseNode
         nid = node_id or f"synapse-{id(self)}"
         self._federation_node = SynapseNode(node_id=nid, synapse=self,

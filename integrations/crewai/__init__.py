@@ -1,4 +1,4 @@
-"""CrewAI integration for Synapse — shared memory for multi-agent crews."""
+"""CrewAI integration for Synapse AI Memory — shared memory for multi-agent crews."""
 
 from .memory import SynapseCrewMemory
 

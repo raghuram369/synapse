@@ -1,4 +1,4 @@
-"""Synapse — A neuroscience-inspired memory engine for AI agents.
+"""Synapse AI Memory — A neuroscience-inspired memory engine for AI agents.
 
 Usage::
 
@@ -18,7 +18,7 @@ from exceptions import (
     SynapseValidationError,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __all__ = [
     "Memory",
     "Synapse",

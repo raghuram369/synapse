@@ -507,25 +507,25 @@ async def _run_server(*, data_dir: str) -> None:
     db_prefix = os.path.join(data_dir, "synapse")
 
     syn = Synapse(db_prefix)
-    # Synapse can optionally call a local Ollama server for embeddings; for MCP usage
+    # Synapse AI Memory can optionally call a local Ollama server for embeddings; for MCP usage
     # we default this off to avoid surprising latency/timeouts. Opt-in via env var.
     if os.environ.get("SYNAPSE_MCP_ENABLE_EMBEDDINGS", "").strip() not in ("1", "true", "TRUE", "yes", "YES"):
         syn._use_embeddings = False  # intentional: avoid lazy availability check during remember/recall
     server, _db_lock = _build_server(syn=syn)
 
     # Avoid accidental stdout writes from logging; only stderr.
-    LOG.info("Synapse MCP server starting. data_dir=%s db_prefix=%s", data_dir, db_prefix)
+    LOG.info("Synapse AI Memory MCP server starting. data_dir=%s db_prefix=%s", data_dir, db_prefix)
 
     async with stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="MCP server for Synapse memory DB (stdio transport).")
+    parser = argparse.ArgumentParser(description="MCP server for Synapse AI Memory (stdio transport).")
     parser.add_argument(
         "--data-dir",
         default="~/.synapse",
-        help="Directory to store Synapse files (default: ~/.synapse).",
+        help="Directory to store Synapse AI Memory files (default: ~/.synapse).",
     )
     args = parser.parse_args(argv)
 

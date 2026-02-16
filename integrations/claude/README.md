@@ -1,4 +1,4 @@
-# Synapse × Claude
+# Synapse AI Memory × Claude
 
 **Persistent memory for Claude conversations.** Your data stays local — only inference calls go to Anthropic.
 
