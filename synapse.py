@@ -24,14 +24,20 @@ if _os.path.isdir(_compat_pkg_dir):
 import json
 import logging
 import math
+import re
+from datetime import datetime, timezone
 import time
 from dataclasses import dataclass, field
+from context_pack import ContextCompiler, ContextPack
 from typing import Any, Dict, List, Optional, Set
 
+from temporal import latest_facts, memories_as_of, memories_during, parse_temporal
 from embeddings import EmbeddingIndex
 from entity_graph import extract_concepts, expand_query
+from contradictions import ContradictionDetector
 from exceptions import SynapseValidationError
 from extractor import extract_facts
+from graph_retrieval import GraphRetriever
 from indexes import (
     ConceptGraph,
     EdgeGraph,
@@ -83,6 +89,9 @@ class Memory:
     access_count: int = 0
     created_at: float = 0.0
     last_accessed: float = 0.0
+    observed_at: Optional[float] = None
+    valid_from: Optional[float] = None
+    valid_to: Optional[float] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     consolidated: bool = False
     summary_of: List[int] = field(default_factory=list)
@@ -123,6 +132,7 @@ class Synapse:
         self.edge_graph = EdgeGraph()
         self.temporal_index = TemporalIndex()
         self.episode_index = EpisodeIndex()
+        self.contradiction_detector = ContradictionDetector()
         
         # Embedding index (optional — uses Ollama if available)
         self.embedding_index = EmbeddingIndex()
@@ -181,6 +191,9 @@ class Synapse:
         links: Optional[List[Dict[str, Any]]] = None,
         metadata: Optional[Dict[str, Any]] = None,
         episode: Optional[str] = None,
+        observed_at: Optional[Any] = None,
+        valid_from: Optional[Any] = None,
+        valid_to: Optional[Any] = None,
         deduplicate: bool = True,
         extract: bool = False,
     ) -> Memory:
@@ -206,6 +219,12 @@ class Synapse:
                 is not recognised.
         """
         now = time.time()
+        observed_ts = self._coerce_temporal_value(observed_at, default=now)
+        valid_from_ts = self._coerce_temporal_value(valid_from, default=observed_ts)
+        valid_to_ts = self._coerce_temporal_value(valid_to, default=None)
+
+        if valid_to_ts is not None and valid_to_ts < valid_from_ts:
+            raise SynapseValidationError("valid_to must be greater than valid_from")
 
         if not content.strip():
             raise SynapseValidationError("Memory content cannot be empty")
@@ -217,14 +236,17 @@ class Synapse:
         if extract:
             return self._remember_with_extraction(
                 content, memory_type, links, metadata, episode, deduplicate, now,
+                observed_ts, valid_from_ts, valid_to_ts,
             )
         return self._remember_single_content(
             content, memory_type, links, metadata, episode, deduplicate, now,
+            observed_ts, valid_from_ts, valid_to_ts,
         )
     
     def _remember_with_extraction(self, content: str, memory_type: str, 
                                   links: Optional[List], metadata: Optional[Dict],
-                                  episode: Optional[str], deduplicate: bool, now: float) -> Memory:
+                                  episode: Optional[str], deduplicate: bool, now: float,
+                                  observed_at: Optional[float], valid_from: Optional[float], valid_to: Optional[float]) -> Memory:
         """Handle memory storage with fact extraction."""
         try:
             # Extract facts using LLM
@@ -232,7 +254,10 @@ class Synapse:
             
             if not facts:
                 logger.warning("No facts extracted from content, storing as-is")
-                return self._remember_single_content(content, memory_type, links, metadata, episode, deduplicate, now)
+                return self._remember_single_content(
+                    content, memory_type, links, metadata, episode, deduplicate, now,
+                    observed_at, valid_from, valid_to,
+                )
             
             # Create memories for each extracted fact
             fact_memories = []
@@ -250,7 +275,8 @@ class Synapse:
                 
                 # Store each fact as a separate memory
                 fact_memory = self._remember_single_content(
-                    fact, memory_type, None, fact_metadata, episode, deduplicate, now
+                    fact, memory_type, None, fact_metadata, episode, deduplicate, now,
+                    observed_at, valid_from, valid_to,
                 )
                 fact_memories.append(fact_memory)
                 fact_ids.append(fact_memory.id)
@@ -278,12 +304,22 @@ class Synapse:
             
         except Exception as e:
             logger.warning("Fact extraction failed (%s), storing content as-is", e)
-            return self._remember_single_content(content, memory_type, links, metadata, episode, deduplicate, now)
+            return self._remember_single_content(
+                content, memory_type, links, metadata, episode, deduplicate, now,
+                observed_at, valid_from, valid_to,
+            )
     
     def _remember_single_content(self, content: str, memory_type: str, 
                                  links: Optional[List], metadata: Optional[Dict],
-                                 episode: Optional[str], deduplicate: bool, now: float) -> Memory:
+                                 episode: Optional[str], deduplicate: bool, now: float,
+                                 observed_at: Optional[float], valid_from: Optional[float], valid_to: Optional[float]) -> Memory:
         """Store a single piece of content as a memory (extracted from original remember logic)."""
+        existing_memories = [
+            self._memory_data_to_object(memory_data)
+            for memory_data in self.store.memories.values()
+            if not memory_data.get('consolidated', False)
+        ]
+
         # Check for duplicates if requested
         similar_memories: List[Memory] = []
         supersedes_target: Optional[Memory] = None
@@ -302,6 +338,9 @@ class Synapse:
             'access_count': 0,
             'created_at': now,
             'last_accessed': now,
+            'observed_at': observed_at,
+            'valid_from': valid_from,
+            'valid_to': valid_to,
             'metadata': json.dumps(metadata or {}),
             'consolidated': False,
             'summary_of': json.dumps([])
@@ -386,9 +425,21 @@ class Synapse:
             access_count=0,
             created_at=now,
             last_accessed=now,
+            observed_at=observed_at,
+            valid_from=valid_from,
+            valid_to=valid_to,
             metadata=metadata or {},
             consolidated=False
         )
+
+        new_contradictions = self.contradiction_detector.check_new_memory(
+            content,
+            existing_memories,
+            new_memory_id=memory_id,
+            new_time=now,
+        )
+        for contradiction in new_contradictions:
+            self.contradiction_detector._register(contradiction)
         
         return memory
     
@@ -430,7 +481,9 @@ class Synapse:
     
     def recall(self, context: str = "", limit: int = 10,
                memory_type: Optional[str] = None, min_strength: float = 0.01,
+               retrieval_mode: str = "classic",
                temporal_boost: bool = True, explain: bool = False,
+               conflict_aware: bool = False,
                temporal: Optional[str] = None) -> List[Memory]:
         """
         Two-Stage Recall with adaptive blending (ported from V1):
@@ -439,27 +492,72 @@ class Synapse:
           Stage 2: Normalize, blend, apply effective strength, edge/episode expansion
         """
         now = time.time()
+        conflicted_memory_ids = (
+            self.contradiction_detector.get_conflicted_memory_ids()
+            if conflict_aware
+            else set()
+        )
+        if retrieval_mode not in {"classic", "graph"}:
+            raise SynapseValidationError("retrieval_mode must be either 'classic' or 'graph'")
 
-        # Temporal fact-chain recall modes.
-        # - None / "latest": default behaviour (current facts)
-        # - "all": return the full fact chain for the best match (oldest -> newest)
-        # - date/timestamp string: return the version that was current at that point in time
-        if temporal is not None and temporal != "latest":
-            # Find the best matching current memory first, then resolve within its chain.
-            base = self.recall(context=context, limit=1, memory_type=memory_type,
-                               min_strength=min_strength, temporal_boost=temporal_boost,
-                               explain=explain, temporal=None)
-            if not base:
-                return []
-            head = base[0]
-            chain = self.history(head.id)
+        # Temporal filtering modes.
+        temporal_mode: Optional[str] = None
+        temporal_start: Optional[float] = None
+        temporal_end: Optional[float] = None
+        if temporal is not None:
             if temporal == "all":
+                # Preserve existing full-chain mode
+                base = self.recall(context=context, limit=1, memory_type=memory_type,
+                                   min_strength=min_strength, retrieval_mode=retrieval_mode,
+                                   temporal_boost=temporal_boost, explain=explain,
+                                   conflict_aware=conflict_aware,
+                                   temporal=None)
+                if not base:
+                    return []
+                head = base[0]
+                chain = self.history(head.id)
                 return [entry["memory"] for entry in chain]
-            at_ts = self._parse_temporal_arg(temporal)
-            if at_ts is None:
-                return [head]
-            resolved = self._resolve_chain_at(chain, at_ts)
-            return [resolved] if resolved is not None else []
+
+            if temporal == "latest":
+                temporal_mode = "latest"
+            elif temporal.startswith("as_of:"):
+                temporal_mode = "as_of"
+                temporal_end = parse_temporal(temporal.split(":", 1)[1])
+            elif temporal.startswith("during:"):
+                temporal_mode = "during"
+                _, _, raw = temporal.partition(":")
+                parts = raw.split(":")
+                if len(parts) == 2:
+                    temporal_start = parse_temporal(parts[0])
+                    temporal_end = parse_temporal(parts[1])
+                    if temporal_start is not None and temporal_end is not None and temporal_start <= temporal_end:
+                        pass
+                    else:
+                        temporal_mode = None
+                else:
+                    temporal_mode = None
+            else:
+                month_range = self._parse_month_range(temporal)
+                if month_range is not None:
+                    temporal_mode = "month"
+                    temporal_start, temporal_end = month_range
+                else:
+                    temporal_mode = "as_of"
+                    temporal_end = self._parse_temporal_arg(temporal)
+
+        def _apply_temporal_filter(results: List[Memory]) -> List[Memory]:
+            if temporal_mode == "as_of" and temporal_end is not None:
+                return memories_as_of(results, temporal_end)
+            if temporal_mode == "during" and temporal_start is not None and temporal_end is not None:
+                return memories_during(results, temporal_start, temporal_end)
+            if temporal_mode == "month" and temporal_start is not None and temporal_end is not None:
+                return [
+                    memory for memory in results
+                    if temporal_start <= memory.created_at < temporal_end
+                ]
+            if temporal_mode == "latest":
+                return latest_facts(results)
+            return results
 
         # Tokenize query
         query_tokens = self.inverted_index.tokenize_for_query(context) if context else []
@@ -475,11 +573,15 @@ class Synapse:
                     
                 memory = self._memory_data_to_object(memory_data)
                 if memory.effective_strength >= min_strength:
-                    all_memories.append(memory)
+                    score = memory.effective_strength
+                    if conflict_aware and memory.id in conflicted_memory_ids:
+                        score *= 0.2
+                    all_memories.append((score, memory))
             
             # Sort by effective strength
-            all_memories.sort(key=lambda m: m.effective_strength, reverse=True)
-            result = all_memories[:limit]
+            all_memories.sort(key=lambda item: item[0], reverse=True)
+            result = _apply_temporal_filter([memory for _, memory in all_memories])
+            result = result[:limit]
             
             # Reinforce accessed memories
             self._reinforce_memories([m.id for m in result])
@@ -494,66 +596,109 @@ class Synapse:
             return []
         
         # ════════════════════════════════════════════════════════════
-        #  STAGE 1: Parallel candidate generation
+        #  STAGE 1: Candidate generation
         # ════════════════════════════════════════════════════════════
-        
-        # Stage 1A: BM25 candidates
-        bm25_scores = self.inverted_index.get_candidates(query_tokens, limit * 10)
-        
-        # Filter by memory_type and consolidated status
-        bm25_scores = {
-            mid: score for mid, score in bm25_scores.items()
-            if mid in self.store.memories
-            and not self.store.memories[mid].get('consolidated', False)
-            and (not memory_type or self.store.memories[mid].get('memory_type') == memory_type)
-        }
-        
-        # Stage 1B: Concept-IDF candidates  
-        query_concepts = [c[0] for c in extract_concepts(context)] if context else []
-        expanded_concepts = expand_query(query_concepts) if query_concepts else []
-        all_concepts = list(set(query_concepts + expanded_concepts))
-        
-        concept_scores = self.concept_graph.get_candidates(all_concepts, limit * 10, total_memories)
-        
-        # Filter concept candidates too
-        concept_scores = {
-            mid: score for mid, score in concept_scores.items()
-            if mid in self.store.memories
-            and not self.store.memories[mid].get('consolidated', False)
-            and (not memory_type or self.store.memories[mid].get('memory_type') == memory_type)
-        }
-        
-        # ════════════════════════════════════════════════════════════
-        # Stage 1C: Embedding candidates (if available)
-        embedding_scores: Dict[int, float] = {}
-        if self._use_embeddings and context:
-            embedding_scores = self.embedding_index.get_candidates(context, limit=limit * 5)
-            # Filter
-            embedding_scores = {
-                mid: score for mid, score in embedding_scores.items()
+        if retrieval_mode == "graph":
+            active_memories = [
+                mdata for mdata in self.store.memories.values()
+                if (
+                    not mdata.get('consolidated', False)
+                    and (not memory_type or mdata.get('memory_type') == memory_type)
+                )
+            ]
+            graph_retriever = GraphRetriever(self.concept_graph)
+            graph_scores = dict(
+                graph_retriever.dual_path_retrieve(
+                    context,
+                    active_memories,
+                    limit=limit * 10,
+                    bm25_weight=0.6,
+                    graph_weight=0.4,
+                )
+            )
+
+            bm25_scores = {
+                int(memory_id): float(score)
+                for memory_id, score in graph_scores.items()
+                if float(score) > 0.0
+            }
+            if not bm25_scores:
+                return []
+            concept_scores: Dict[int, float] = {}
+            embedding_scores: Dict[int, float] = {}
+        else:
+            # Stage 1A: BM25 candidates
+            bm25_scores = self.inverted_index.get_candidates(query_tokens, limit * 10)
+            
+            # Filter by memory_type and consolidated status
+            bm25_scores = {
+                mid: score for mid, score in bm25_scores.items()
                 if mid in self.store.memories
                 and not self.store.memories[mid].get('consolidated', False)
                 and (not memory_type or self.store.memories[mid].get('memory_type') == memory_type)
             }
+            
+            # Stage 1B: Concept-IDF candidates  
+            query_concepts = [c[0] for c in extract_concepts(context)] if context else []
+            expanded_concepts = expand_query(query_concepts) if query_concepts else []
+            all_concepts = list(set(query_concepts + expanded_concepts))
+            
+            concept_scores = self.concept_graph.get_candidates(all_concepts, limit * 10, total_memories)
+            
+            # Filter concept candidates too
+            concept_scores = {
+                mid: score for mid, score in concept_scores.items()
+                if mid in self.store.memories
+                and not self.store.memories[mid].get('consolidated', False)
+                and (not memory_type or self.store.memories[mid].get('memory_type') == memory_type)
+            }
+            
+            # Stage 1C: Embedding candidates (if available)
+            embedding_scores: Dict[int, float] = {}
+            if self._use_embeddings and context:
+                embedding_scores = self.embedding_index.get_candidates(context, limit=limit * 5)
+                # Filter
+                embedding_scores = {
+                    mid: score for mid, score in embedding_scores.items()
+                    if mid in self.store.memories
+                    and not self.store.memories[mid].get('consolidated', False)
+                    and (not memory_type or self.store.memories[mid].get('memory_type') == memory_type)
+                }
+                # In classic mode, embeddings should not inject totally unrelated memories.
+                # Gate embedding-only candidates behind lexical support.
+                if retrieval_mode != "graph" and bm25_scores:
+                    embedding_scores = {
+                        mid: score for mid, score in embedding_scores.items()
+                        if mid in bm25_scores
+                    }
         
         #  STAGE 2: Concept-Boosted BM25 + Effective Strength
         # ════════════════════════════════════════════════════════════
         
-        all_ids = set(bm25_scores.keys()) | set(concept_scores.keys()) | set(embedding_scores.keys())
+        # In classic mode, do not inject pure concept-graph candidates with zero lexical/embedding support.
+        # Graph mode is the intended mechanism for "concept-only" retrieval.
+        if retrieval_mode == "graph":
+            all_ids = set(bm25_scores.keys()) | set(concept_scores.keys()) | set(embedding_scores.keys())
+        else:
+            all_ids = set(bm25_scores.keys()) | set(embedding_scores.keys())
+            if concept_scores:
+                concept_scores = {mid: score for mid, score in concept_scores.items() if mid in all_ids}
         if not all_ids:
             return []
         
-        # Adaptive concept weighting based on query length
-        # BM25 is the PRIMARY signal; concepts only boost, never inject
+        # Adaptive concept weighting based on query length.
+        # Graph mode already blends lexical/graph paths upstream.
         n_tokens = len(query_tokens)
-        if n_tokens <= 1:
-            concept_weight = 0.5
-        elif n_tokens <= 2:
-            concept_weight = 0.3
-        elif n_tokens <= 4:
-            concept_weight = 0.2
-        else:
-            concept_weight = 0.0    # pure BM25 for long queries
+        concept_weight = 0.0
+        if retrieval_mode != "graph":
+            if n_tokens <= 1:
+                concept_weight = 0.5
+            elif n_tokens <= 2:
+                concept_weight = 0.3
+            elif n_tokens <= 4:
+                concept_weight = 0.2
+            else:
+                concept_weight = 0.0
         
         # Normalize concept scores
         c_max = max(concept_scores.values()) if concept_scores else 1.0
@@ -574,7 +719,10 @@ class Synapse:
 
         # Determine embedding weight based on query characteristics
         # Short queries benefit more from embeddings; long specific queries favor BM25
-        if embedding_scores:
+        if retrieval_mode == "graph":
+            bm_weight = 1.0
+            emb_weight = 0.0
+        elif embedding_scores:
             if n_tokens <= 3:
                 emb_weight = 0.4
             elif n_tokens <= 6:
@@ -594,27 +742,28 @@ class Synapse:
             # Treat "BM25" component as lexical (BM25 + optional embedding fusion)
             lexical = bm * bm_weight + emb * emb_weight
 
-            # Keep a *tiny* concept boost inside lexical for very short queries
-            lexical = lexical + cn * concept_weight * 0.05
+            if retrieval_mode != "graph":
+                # Keep a tiny concept boost inside lexical for very short queries.
+                lexical = lexical + cn * concept_weight * 0.05
 
             if lexical > 0:
                 lexical_scores[memory_id] = lexical
                 concept_norms[memory_id] = cn
 
-            if explain:
-                sources = []
-                if memory_id in bm25_scores:
-                    sources.append("bm25")
-                if memory_id in concept_scores:
-                    sources.append("concept_graph")
-                if memory_id in embedding_scores:
-                    sources.append("embedding")
-                breakdowns[memory_id] = ScoreBreakdown(
-                    bm25_score=lexical,
-                    concept_score=cn,
-                    embedding_score=emb,
-                    match_sources=sources,
-                )
+                if explain:
+                    sources = []
+                    if memory_id in bm25_scores:
+                        sources.append("graph_retriever" if retrieval_mode == "graph" else "bm25")
+                    if memory_id in concept_scores:
+                        sources.append("concept_graph")
+                    if memory_id in embedding_scores:
+                        sources.append("embedding")
+                    breakdowns[memory_id] = ScoreBreakdown(
+                        bm25_score=lexical,
+                        concept_score=cn,
+                        embedding_score=emb,
+                        match_sources=sources,
+                    )
         
         if not lexical_scores:
             return []
@@ -752,6 +901,9 @@ class Synapse:
             if memory_id in superseded_ids:
                 score *= 0.1  # Heavily demote superseded memories
 
+            if conflict_aware and memory_id in conflicted_memory_ids:
+                score *= 0.2
+
             # Memory level boost: pattern (consolidated) and profile rank higher
             level = memory_data.get('memory_level', 'instance')
             if level == 'pattern':
@@ -763,7 +915,8 @@ class Synapse:
         
         # Sort and limit
         final_results.sort(key=lambda x: x[1], reverse=True)
-        result_memories = [memory for memory, _ in final_results[:limit]]
+        result_memories = _apply_temporal_filter([memory for memory, _ in final_results])
+        result_memories = result_memories[:limit]
         
         # Attach score breakdowns if explain=True
         if explain:
@@ -778,6 +931,19 @@ class Synapse:
         self._reinforce_memories([m.id for m in result_memories])
 
         return result_memories
+
+    def compile_context(
+        self,
+        query: str,
+        budget: int = 4000,
+        policy: str = "balanced",
+    ) -> ContextPack:
+        """Compile retrieved memories, graph context and summaries into a ContextPack."""
+        return ContextCompiler(self).compile_context(
+            query=query,
+            budget=budget,
+            policy=policy,
+        )
     
     def _memory_data_to_object(self, memory_data: Dict) -> Memory:
         """Convert stored memory data to Memory object."""
@@ -790,10 +956,74 @@ class Synapse:
             access_count=memory_data['access_count'],
             created_at=memory_data['created_at'],
             last_accessed=memory_data['last_accessed'],
+            observed_at=memory_data.get('observed_at'),
+            valid_from=memory_data.get('valid_from'),
+            valid_to=memory_data.get('valid_to'),
             metadata=json.loads(memory_data.get('metadata', '{}')),
             consolidated=memory_data.get('consolidated', False),
             summary_of=json.loads(memory_data.get('summary_of', '[]'))
         )
+
+    def contradictions(self) -> List:
+        """Return unresolved contradictions detected for this Synapse."""
+        return self.contradiction_detector.unresolved_contradictions()
+
+    def resolve_contradiction(self, contradiction_id: int, winner_memory_id: int):
+        """Resolve a contradiction by winner memory id; mark loser as superseded."""
+        unresolved = self.contradictions()
+        if contradiction_id < 0 or contradiction_id >= len(unresolved):
+            raise SynapseValidationError("Invalid contradiction_id")
+
+        target = unresolved[contradiction_id]
+        if winner_memory_id not in {target.memory_id_a, target.memory_id_b}:
+            raise SynapseValidationError("winner_memory_id must be part of contradiction pair")
+
+        loser_memory_id = target.memory_id_b if winner_memory_id == target.memory_id_a else target.memory_id_a
+        if loser_memory_id not in self.store.memories:
+            raise SynapseValidationError("Loser memory no longer exists")
+
+        if not any(
+            edge.edge_type == "supersedes" and edge.target_id == loser_memory_id
+            for edge in self.edge_graph.get_outgoing_edges(winner_memory_id)
+        ):
+            self.link(winner_memory_id, loser_memory_id, "supersedes", 1.0)
+
+        loser_data = self.store.memories[loser_memory_id]
+        loser_meta = json.loads(loser_data.get('metadata', '{}'))
+        loser_meta['superseded_by'] = winner_memory_id
+        loser_meta['superseded_at'] = time.time()
+        self.store.update_memory(loser_memory_id, {'metadata': json.dumps(loser_meta)})
+
+        self.contradiction_detector.resolve_contradiction(contradiction_id)
+
+    def _coerce_temporal_value(self, value: Optional[Any], default: Optional[float] = None) -> Optional[float]:
+        """Coerce an optional temporal value to a float timestamp."""
+        if value is None:
+            return default
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            parsed = parse_temporal(value)
+            if parsed is not None:
+                return parsed
+            raise SynapseValidationError(f"Invalid temporal value: {value!r}")
+        raise SynapseValidationError(f"Unsupported temporal type: {type(value)!r}")
+
+    @staticmethod
+    def _parse_month_range(value: str) -> Optional[tuple]:
+        """Return a month interval for an ISO month string or 'March 2024'."""
+        normalized = value.strip()
+        if not re.fullmatch(r"\d{4}-\d{1,2}", normalized) and not re.fullmatch(r"^[a-zA-Z]+ \d{4}$", normalized):
+            return None
+        start = parse_temporal(normalized)
+        if start is None:
+            return None
+        dt = datetime.fromtimestamp(start, tz=timezone.utc)
+        if dt.month == 12:
+            end = datetime(dt.year + 1, 1, 1, tzinfo=timezone.utc).timestamp()
+        else:
+            end = datetime(dt.year, dt.month + 1, 1, tzinfo=timezone.utc).timestamp()
+        return (start, end)
     
     def _reinforce_memories(self, memory_ids: List[int]):
         """Reinforce memories by incrementing access count and updating last_accessed."""
@@ -1192,24 +1422,7 @@ class Synapse:
     @staticmethod
     def _parse_temporal_arg(temporal: str) -> Optional[float]:
         """Parse a temporal argument like '2024-03' or '2024-06-15' into a timestamp."""
-        import datetime
-        for fmt in ("%Y-%m-%d", "%Y-%m"):
-            try:
-                dt = datetime.datetime.strptime(temporal, fmt)
-                # For month-only, use end of month
-                if fmt == "%Y-%m":
-                    if dt.month == 12:
-                        dt = dt.replace(year=dt.year + 1, month=1)
-                    else:
-                        dt = dt.replace(month=dt.month + 1)
-                return dt.timestamp()
-            except ValueError:
-                continue
-        # Try as float timestamp
-        try:
-            return float(temporal)
-        except (ValueError, TypeError):
-            return None
+        return parse_temporal(temporal)
 
     @staticmethod
     def _resolve_chain_at(chain: List[Dict[str, Any]], at_ts: float) -> Optional['Memory']:

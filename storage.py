@@ -168,10 +168,17 @@ class MemoryStore:
             self.memories = {int(k): v for k, v in self.memories.items()}
             self.edges = {int(k): v for k, v in self.edges.items()}
             self.episodes = {int(k): v for k, v in self.episodes.items()}
+            for memory_data in self.memories.values():
+                self._normalize_memory(memory_data)
         
         # Replay log entries on top of snapshot
         for entry in self.log.read_all():
             self._replay_operation(entry)
+        
+    def _normalize_memory(self, memory_data: Dict[str, Any]):
+        """Ensure optional temporal fields always exist for compatibility."""
+        for field in ("observed_at", "valid_from", "valid_to"):
+            memory_data.setdefault(field, None)
     
     def _replay_operation(self, entry: Dict[str, Any]):
         """Replay a log operation to update in-memory state."""
@@ -180,6 +187,7 @@ class MemoryStore:
         
         if op == 'insert_memory':
             memory_id = data['id']
+            self._normalize_memory(data)
             self.memories[memory_id] = data
             self.next_memory_id = max(self.next_memory_id, memory_id + 1)
             
@@ -213,6 +221,7 @@ class MemoryStore:
     
     def insert_memory(self, memory_data: Dict[str, Any]) -> int:
         """Insert a new memory and return its ID."""
+        self._normalize_memory(memory_data)
         memory_id = self.next_memory_id
         self.next_memory_id += 1
         
