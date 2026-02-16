@@ -192,6 +192,7 @@ class ContextCompiler:
         query: str,
         budget: int = 4000,
         policy: str = "balanced",
+        scope: str = "private",
     ) -> ContextPack:
         policy_name = (policy or "balanced").lower()
         if policy_name not in self._POLICIES:
@@ -208,6 +209,7 @@ class ContextCompiler:
             min_strength=cfg["min_strength"],
             temporal_boost=cfg["temporal_boost"],
             explain=True,
+            scope=scope,
         )
         timings["recall_ms"] = (time.perf_counter() - recall_start) * 1000.0
 
@@ -254,6 +256,7 @@ class ContextCompiler:
         pack.metadata.update(
             {
                 "policy": policy_name,
+                "scope": scope,
                 "requested_budget": budget,
                 "timing_ms": {
                     "recall": timings["recall_ms"],
@@ -284,6 +287,7 @@ class ContextCompiler:
             "content": memory.content,
             "memory_type": memory.memory_type,
             "memory_level": memory.memory_level,
+            "scope": getattr(memory, "scope", "private"),
             "strength": memory.strength,
             "created_at": memory.created_at,
             "last_accessed": memory.last_accessed,

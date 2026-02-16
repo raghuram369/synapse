@@ -30,9 +30,11 @@ import mcp.types as types
 
 from exceptions import SynapseValidationError
 from synapse import Synapse, MEMORY_TYPES, EDGE_TYPES, Memory, ScoreBreakdown
+from egress_guard import EgressGuard
 
 
 LOG = logging.getLogger("synapse-mcp")
+ALLOWED_SCOPES = ("public", "shared", "private")
 
 
 def _json_dumps(data: Any) -> str:
@@ -82,6 +84,66 @@ def _memory_to_dict(m: Memory) -> Dict[str, Any]:
     return d
 
 
+def _normalize_scope(
+    value: Any,
+    *,
+    field: str = "scope",
+    default: str = "private",
+    allow_default: bool = True,
+) -> str:
+    if value is None:
+        if not allow_default:
+            raise ValueError(f"{field} is required")
+        raw = default
+    else:
+        raw = value
+    if not isinstance(raw, str):
+        raise ValueError(f"{field} must be a string")
+    scope = raw.strip().lower()
+    if not scope:
+        if not allow_default:
+            raise ValueError(f"{field} cannot be empty")
+        scope = default
+    if scope not in ALLOWED_SCOPES:
+        raise ValueError(f"{field} must be one of: {', '.join(ALLOWED_SCOPES)}")
+    return scope
+
+
+def _stored_scope(value: Any) -> str:
+    if isinstance(value, str):
+        scope = value.strip().lower()
+        if scope in ALLOWED_SCOPES:
+            return scope
+    return "private"
+
+
+def _is_scope_visible(memory_scope: str, requested_scope: str) -> bool:
+    return ALLOWED_SCOPES.index(memory_scope) <= ALLOWED_SCOPES.index(requested_scope)
+
+
+def _normalize_metadata(raw_metadata: Any) -> Dict[str, Any]:
+    if isinstance(raw_metadata, dict):
+        return dict(raw_metadata)
+    if isinstance(raw_metadata, str) and raw_metadata:
+        try:
+            parsed = json.loads(raw_metadata)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def _filter_text_payload(value: Any, guard: EgressGuard) -> Any:
+    if isinstance(value, str):
+        return guard.filter_context(value)
+    if isinstance(value, list):
+        return [_filter_text_payload(item, guard) for item in value]
+    if isinstance(value, dict):
+        return {k: _filter_text_payload(v, guard) for k, v in value.items()}
+    return value
+
+
 def _error_payload(exc: BaseException, *, code: str = "tool_error") -> Dict[str, Any]:
     return {
         "ok": False,
@@ -111,6 +173,7 @@ def _tool_schema_remember() -> Dict[str, Any]:
             "memory_type": {"type": "string", "enum": sorted(MEMORY_TYPES), "default": "fact"},
             "metadata": {"type": "object", "default": {}, "description": "Arbitrary JSON metadata."},
             "episode": {"type": "string", "default": "", "description": "Optional episode name/group."},
+            "scope": {"type": "string", "enum": list(ALLOWED_SCOPES), "default": "private"},
         },
         "required": ["content"],
     }
@@ -127,6 +190,7 @@ def _tool_schema_recall() -> Dict[str, Any]:
             "explain": {"type": "boolean", "default": False, "description": "Include score breakdown."},
             "show_disputes": {"type": "boolean", "default": False, "description": "Include unresolved contradiction disputes per memory."},
             "exclude_conflicted": {"type": "boolean", "default": False, "description": "Filter out memories with unresolved contradictions."},
+            "scope": {"type": "string", "enum": list(ALLOWED_SCOPES), "default": "private"},
         },
         "required": ["query"],
     }
@@ -140,6 +204,7 @@ def _tool_schema_list() -> Dict[str, Any]:
             "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 50},
             "offset": {"type": "integer", "minimum": 0, "default": 0},
             "sort": {"type": "string", "enum": ["recent", "created", "access_count"], "default": "recent"},
+            "scope": {"type": "string", "enum": list(ALLOWED_SCOPES), "default": "private"},
         },
     }
 
@@ -152,6 +217,7 @@ def _tool_schema_browse() -> Dict[str, Any]:
             "concept": {"type": "string", "description": "Concept name to browse."},
             "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 50},
             "offset": {"type": "integer", "minimum": 0, "default": 0},
+            "scope": {"type": "string", "enum": list(ALLOWED_SCOPES), "default": "private"},
         },
         "required": ["concept"],
     }
@@ -203,7 +269,13 @@ def _tool_schema_gdpr_delete() -> Dict[str, Any]:
 
 
 def _tool_schema_count() -> Dict[str, Any]:
-    return {"type": "object", "additionalProperties": False, "properties": {}}
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "scope": {"type": "string", "enum": list(ALLOWED_SCOPES), "default": "private"},
+        },
+    }
 
 
 def _tool_schema_link() -> Dict[str, Any]:
@@ -235,8 +307,26 @@ def _tool_schema_compile_context() -> Dict[str, Any]:
                 "enum": ["balanced", "precise", "broad", "temporal"],
                 "default": "balanced",
             },
+            "scope": {"type": "string", "enum": list(ALLOWED_SCOPES), "default": "private"},
         },
         "required": ["query"],
+    }
+
+
+def _tool_schema_set_scope() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "scope": {"type": "string", "enum": list(ALLOWED_SCOPES)},
+            "from_scope": {"type": "string", "enum": list(ALLOWED_SCOPES)},
+            "memory_ids": {
+                "type": "array",
+                "items": {"type": "integer", "minimum": 1},
+                "description": "Optional memory IDs to limit updates to.",
+            },
+        },
+        "required": ["scope"],
     }
 
 
@@ -245,7 +335,13 @@ def _tool_schema_beliefs() -> Dict[str, Any]:
 
 
 def _tool_schema_contradictions() -> Dict[str, Any]:
-    return {"type": "object", "additionalProperties": False, "properties": {}}
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "scope": {"type": "string", "enum": list(ALLOWED_SCOPES), "default": "private"},
+        },
+    }
 
 
 def _tool_schema_communities() -> Dict[str, Any]:
@@ -280,6 +376,7 @@ def _active_memory_count(syn: Synapse) -> int:
 def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
     server = Server("synapse-memory")
     db_lock = asyncio.Lock()
+    egress_guard = EgressGuard(sensitivity=os.environ.get("SYNAPSE_EGRESS_SENSITIVITY", "standard"))
 
     @server.list_tools()
     async def list_tools() -> List[types.Tool]:
@@ -308,6 +405,11 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                 name="redact",
                 description="Redact memory content while keeping metadata and graph links.",
                 inputSchema=_tool_schema_redact(),
+            ),
+            types.Tool(
+                name="set_scope",
+                description="Bulk update memory scope labels (public/shared/private).",
+                inputSchema=_tool_schema_set_scope(),
             ),
             types.Tool(
                 name="gdpr_delete",
@@ -357,6 +459,7 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                     "type": "object",
                     "properties": {
                         "query": {"type": "string", "description": "Query to find fact history for"},
+                        "scope": {"type": "string", "enum": list(ALLOWED_SCOPES), "default": "private"},
                     },
                     "required": ["query"],
                 },
@@ -389,6 +492,7 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                     "type": "object",
                     "properties": {
                         "query": {"type": "string", "description": "Query to get timeline for"},
+                        "scope": {"type": "string", "enum": list(ALLOWED_SCOPES), "default": "private"},
                     },
                     "required": ["query"],
                 },
@@ -451,6 +555,10 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
     @server.call_tool()
     async def call_tool(name: str, arguments: Optional[Dict[str, Any]]) -> List[types.TextContent]:
         args = arguments or {}
+        requested_scope = "private"
+
+        def _memory_visible_in_scope(memory_data: Dict[str, Any]) -> bool:
+            return _is_scope_visible(_stored_scope(memory_data.get("scope")), requested_scope)
 
         try:
             if name == "remember":
@@ -477,6 +585,7 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                 if episode is not None and not isinstance(episode, str):
                     raise ValueError("episode must be a string")
                 episode = (episode or "").strip() or None
+                scope = _normalize_scope(args.get("scope", "private"))
 
                 async with db_lock:
                     mem = syn.remember(
@@ -485,6 +594,7 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                         metadata=metadata,
                         episode=episode,
                         extract=False,
+                        scope=scope,
                     )
                     syn.flush()
 
@@ -508,12 +618,15 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                         raise ValueError(f"Invalid memory_type: {memory_type}. Must be one of {sorted(MEMORY_TYPES)}")
 
                 do_explain = bool(args.get("explain", False))
+                scope = _normalize_scope(args.get("scope", "private"))
+                requested_scope = scope
 
                 async with db_lock:
                     memories = syn.recall(context=query, limit=limit_i,
                                           memory_type=memory_type, explain=do_explain,
                                           show_disputes=bool(args.get("show_disputes", False)),
-                                          exclude_conflicted=bool(args.get("exclude_conflicted", False)))
+                                          exclude_conflicted=bool(args.get("exclude_conflicted", False)),
+                                          scope=scope)
 
                 mem_dicts = []
                 for m in memories:
@@ -574,6 +687,56 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                         syn.flush()
                 payload = _ok_payload(result)
 
+            elif name == "set_scope":
+                target_scope = _normalize_scope(
+                    args.get("scope"),
+                    field="scope",
+                    allow_default=False,
+                )
+                from_scope_raw = args.get("from_scope", None)
+                from_scope = (
+                    _normalize_scope(from_scope_raw, field="from_scope")
+                    if from_scope_raw is not None
+                    else None
+                )
+                memory_ids_raw = args.get("memory_ids", None)
+                memory_ids_filter: Optional[set[int]] = None
+                if memory_ids_raw is not None:
+                    if not isinstance(memory_ids_raw, list):
+                        raise ValueError("memory_ids must be an array of integers")
+                    memory_ids_filter = set()
+                    for raw_id in memory_ids_raw:
+                        memory_ids_filter.add(_as_int(raw_id, field="memory_ids[]"))
+
+                updated_ids: List[int] = []
+                scanned = 0
+                async with db_lock:
+                    for memory_id, memory_data in syn.store.memories.items():
+                        if memory_ids_filter is not None and memory_id not in memory_ids_filter:
+                            continue
+                        scanned += 1
+                        current_scope = _stored_scope(memory_data.get("scope"))
+                        if from_scope is not None and current_scope != from_scope:
+                            continue
+                        if current_scope == target_scope:
+                            continue
+                        syn.store.update_memory(
+                            memory_id,
+                            {"scope": target_scope},
+                        )
+                        updated_ids.append(memory_id)
+                    if updated_ids:
+                        syn.flush()
+                payload = _ok_payload(
+                    {
+                        "scope": target_scope,
+                        "from_scope": from_scope,
+                        "updated_count": len(updated_ids),
+                        "scanned_count": scanned,
+                        "updated_memory_ids": updated_ids,
+                    }
+                )
+
             elif name == "gdpr_delete":
                 user_id = args.get("user_id", None)
                 concept = args.get("concept", None)
@@ -593,8 +756,14 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                 payload = _ok_payload(result)
 
             elif name == "count":
+                requested_scope = _normalize_scope(args.get("scope", "private"))
                 async with db_lock:
-                    c = _active_memory_count(syn)
+                    c = sum(
+                        1
+                        for memory_data in syn.store.memories.values()
+                        if not memory_data.get("consolidated", False)
+                        and _memory_visible_in_scope(memory_data)
+                    )
                 payload = _ok_payload({"count": c})
 
             elif name == "link":
@@ -635,9 +804,19 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                 sort_str = args.get("sort", "recent")
                 if sort_str not in ("recent", "created", "access_count"):
                     raise ValueError("sort must be one of: recent, created, access_count")
+                requested_scope = _normalize_scope(args.get("scope", "private"))
                 async with db_lock:
                     memories = syn.list(limit=limit_i, offset=offset_i, sort=sort_str)
-                    total = syn.count()
+                    memories = [
+                        memory for memory in memories
+                        if _is_scope_visible(_stored_scope(getattr(memory, "scope", "private")), requested_scope)
+                    ]
+                    total = sum(
+                        1
+                        for memory_data in syn.store.memories.values()
+                        if not memory_data.get("consolidated", False)
+                        and _memory_visible_in_scope(memory_data)
+                    )
                 payload = _ok_payload({
                     "memories": [_memory_to_dict(m) for m in memories],
                     "returned": len(memories),
@@ -650,8 +829,13 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                     raise ValueError("concept is required")
                 limit_i = _as_int(args.get("limit", 50), field="limit")
                 offset_i = _as_int(args.get("offset", 0), field="offset")
+                requested_scope = _normalize_scope(args.get("scope", "private"))
                 async with db_lock:
                     memories = syn.browse(concept=concept.strip(), limit=limit_i, offset=offset_i)
+                    memories = [
+                        memory for memory in memories
+                        if _is_scope_visible(_stored_scope(getattr(memory, "scope", "private")), requested_scope)
+                    ]
                 payload = _ok_payload({
                     "memories": [_memory_to_dict(m) for m in memories],
                     "returned": len(memories),
@@ -669,8 +853,16 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                 query = args.get("query", "")
                 if not isinstance(query, str) or not query.strip():
                     raise ValueError("query is required")
+                requested_scope = _normalize_scope(args.get("scope", "private"))
                 async with db_lock:
                     chain = syn.fact_history(query.strip())
+                    chain = [
+                        entry for entry in chain
+                        if _is_scope_visible(
+                            _stored_scope(getattr(entry.get("memory"), "scope", "private")),
+                            requested_scope,
+                        )
+                    ]
                 payload = _ok_payload({"chain": chain, "count": len(chain)})
 
             elif name == "hot_concepts":
@@ -691,8 +883,16 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                 query = args.get("query", "")
                 if not isinstance(query, str) or not query.strip():
                     raise ValueError("query is required")
+                requested_scope = _normalize_scope(args.get("scope", "private"))
                 async with db_lock:
                     chain = syn.fact_history(query.strip())
+                    chain = [
+                        entry for entry in chain
+                        if _is_scope_visible(
+                            _stored_scope(getattr(entry.get("memory"), "scope", "private")),
+                            requested_scope,
+                        )
+                    ]
                 payload = _ok_payload({"timeline": chain, "count": len(chain)})
 
             elif name == "compile_context":
@@ -709,14 +909,24 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                 if not isinstance(policy, str) or not policy.strip():
                     policy = "balanced"
                 policy = policy.strip().lower()
+                scope = _normalize_scope(args.get("scope", "private"))
+                requested_scope = scope
 
                 async with db_lock:
-                    pack = syn.compile_context(query=query.strip(), budget=budget_i, policy=policy)
+                    pack = syn.compile_context(
+                        query=query.strip(),
+                        budget=budget_i,
+                        policy=policy,
+                        scope=scope,
+                    )
+                context_pack = pack.to_dict()
+                compact = pack.to_compact()
+                system_prompt = pack.to_system_prompt()
                 payload = _ok_payload(
                     {
-                        "context_pack": pack.to_dict(),
-                        "compact": pack.to_compact(),
-                        "system_prompt": pack.to_system_prompt(),
+                        "context_pack": context_pack,
+                        "compact": compact,
+                        "system_prompt": system_prompt,
                     }
                 )
 
@@ -734,6 +944,7 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                 payload = _ok_payload({"beliefs": result, "count": len(result)})
 
             elif name == "contradictions":
+                requested_scope = _normalize_scope(args.get("scope", "private"))
                 async with db_lock:
                     contradictions = syn.contradictions()
                     store_view = dict(syn.store.memories)
@@ -746,10 +957,20 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
                         row = dict(getattr(c, "__dict__", {}))
                     a_id = row.get("memory_id_a")
                     b_id = row.get("memory_id_b")
-                    if isinstance(a_id, int) and a_id in store_view:
-                        row["memory_a"] = (store_view[a_id].get("content") or "")[:400]
-                    if isinstance(b_id, int) and b_id in store_view:
-                        row["memory_b"] = (store_view[b_id].get("content") or "")[:400]
+                    if not (
+                        isinstance(a_id, int)
+                        and isinstance(b_id, int)
+                        and a_id in store_view
+                        and b_id in store_view
+                    ):
+                        continue
+                    if not (
+                        _memory_visible_in_scope(store_view[a_id])
+                        and _memory_visible_in_scope(store_view[b_id])
+                    ):
+                        continue
+                    row["memory_a"] = (store_view[a_id].get("content") or "")[:400]
+                    row["memory_b"] = (store_view[b_id].get("content") or "")[:400]
                     items.append(row)
 
                 payload = _ok_payload({"contradictions": items, "count": len(items)})
@@ -883,6 +1104,9 @@ def _build_server(*, syn: Synapse) -> Tuple[Server, asyncio.Lock]:
             # Important: keep stdout clean for JSON-RPC; log errors to stderr only.
             LOG.exception("Tool call failed: %s", name)
             payload = _error_payload(exc)
+
+        if payload.get("ok") and requested_scope != "private":
+            payload = _ok_payload(_filter_text_payload(payload.get("result"), egress_guard))
 
         return [types.TextContent(type="text", text=_json_dumps(payload))]
 

@@ -74,6 +74,7 @@ MEMORY_TYPES: Set[str] = {
     "consolidated",
     "semantic",
 }
+MEMORY_SCOPES = ("public", "shared", "private")
 MEMORY_LEVELS: Set[str] = {"instance", "pattern", "profile"}
 EDGE_TYPES: Set[str] = {
     "caused_by", "contradicts", "reminds_of", "supports",
@@ -105,6 +106,7 @@ class Memory:
     content: str = ""
     memory_type: str = "fact"
     memory_level: str = "instance"
+    scope: str = "private"
     strength: float = 1.0
     access_count: int = 0
     created_at: float = 0.0
@@ -266,6 +268,7 @@ class Synapse:
         self,
         content: str,
         memory_type: str = "fact",
+        scope: str = "private",
         links: Optional[List[Dict[str, Any]]] = None,
         metadata: Optional[Dict[str, Any]] = None,
         episode: Optional[str] = None,
@@ -280,6 +283,7 @@ class Synapse:
         Args:
             content: The text content to memorise.
             memory_type: One of ``MEMORY_TYPES``.
+            scope: One of ``MEMORY_SCOPES``.
             links: Optional edges to create (list of dicts with
                 ``target_id``, ``edge_type``, and optionally ``weight``).
             metadata: Arbitrary JSON-serialisable metadata.
@@ -312,20 +316,22 @@ class Synapse:
             )
 
         memory_type = str(memory_type)
-        content, metadata = self._apply_policy_rules(
+        scope = self._normalize_scope(scope)
+        content, metadata, scope = self._apply_policy_rules(
             content=content,
             metadata=metadata,
             memory_type=memory_type,
+            scope=scope,
         )
 
         if extract:
             memory = self._remember_with_extraction(
-                content, memory_type, links, metadata, episode, deduplicate, now,
+                content, memory_type, scope, links, metadata, episode, deduplicate, now,
                 observed_ts, valid_from_ts, valid_to_ts,
             )
         else:
             memory = self._remember_single_content(
-                content, memory_type, links, metadata, episode, deduplicate, now,
+                content, memory_type, scope, links, metadata, episode, deduplicate, now,
                 observed_ts, valid_from_ts, valid_to_ts,
             )
 
@@ -348,17 +354,19 @@ class Synapse:
         content: str,
         metadata: Optional[Dict[str, Any]],
         memory_type: str,
-    ) -> tuple[str, Optional[Dict[str, Any]]]:
+        scope: str,
+    ) -> tuple[str, Optional[Dict[str, Any]], str]:
         """Apply active policy hooks before storing memory content.
 
-        Returns sanitized content and metadata pair.
+        Returns sanitized content, metadata and scope.
         """
         policy = self.policy_manager.get_active()
         if not policy:
-            return content, metadata
+            return content, metadata, scope
 
         metadata_dict = dict(metadata or {}) if isinstance(metadata, dict) else {}
         tags = set(self._coerce_tags(metadata_dict.get("tags")))
+        resolved_scope = self._normalize_scope(scope)
 
         if policy.get("redact_pii"):
             pii_patterns = policy.get("pii_patterns")
@@ -374,6 +382,35 @@ class Synapse:
             if self._has_commitment_language(content):
                 tags.add("commitment")
 
+        policy_scope = policy.get("scope")
+        if policy_scope is not None:
+            try:
+                resolved_scope = self._normalize_scope(policy_scope)
+            except SynapseValidationError:
+                pass
+
+        scope_by_type = policy.get("scope_by_type")
+        if isinstance(scope_by_type, dict):
+            type_scope = scope_by_type.get(memory_type)
+            if type_scope is not None:
+                try:
+                    resolved_scope = self._normalize_scope(type_scope)
+                except SynapseValidationError:
+                    pass
+
+        scope_by_tag = policy.get("scope_by_tag")
+        if isinstance(scope_by_tag, dict) and tags:
+            tag_scopes: List[str] = []
+            for tag in tags:
+                if tag not in scope_by_tag:
+                    continue
+                try:
+                    tag_scopes.append(self._normalize_scope(scope_by_tag[tag]))
+                except SynapseValidationError:
+                    continue
+            if tag_scopes:
+                resolved_scope = max(tag_scopes, key=MEMORY_SCOPES.index)
+
         if tags:
             metadata_dict["tags"] = sorted(set(tags))
 
@@ -383,7 +420,7 @@ class Synapse:
         elif metadata_dict:
             metadata = metadata_dict
 
-        return content, metadata
+        return content, metadata, resolved_scope
 
     def _apply_policy_retention(self) -> Dict[str, Any]:
         """Run active policy retention rules."""
@@ -549,8 +586,47 @@ class Synapse:
     def _active_preset_name(self) -> str:
         policy = self.policy_manager.get_active() or {}
         return str(policy.get("name", "").strip())
+
+    @staticmethod
+    def _normalize_scope(scope: Any, *, allow_none: bool = False) -> Optional[str]:
+        """Validate and normalize a memory scope value."""
+        if scope is None:
+            if allow_none:
+                return None
+            return "private"
+        normalized = str(scope).strip().lower()
+        if normalized not in MEMORY_SCOPES:
+            raise SynapseValidationError(
+                f"Invalid scope: {scope}. Must be one of {MEMORY_SCOPES}"
+            )
+        return normalized
+
+    @staticmethod
+    def _memory_scope(memory_data: Dict[str, Any]) -> str:
+        """Resolve persisted memory scope with backward-compatible default."""
+        raw = memory_data.get("scope", "private")
+        normalized = str(raw).strip().lower() if raw is not None else "private"
+        return normalized if normalized in MEMORY_SCOPES else "private"
+
+    @staticmethod
+    def _is_scope_visible(memory_scope: str, requested_scope: str) -> bool:
+        """Return True when a memory is visible from requested scope."""
+        return MEMORY_SCOPES.index(memory_scope) <= MEMORY_SCOPES.index(requested_scope)
     
-    def _remember_with_extraction(self, content: str, memory_type: str, 
+    def bulk_set_scope(self, memory_ids: List[int], scope: str) -> int:
+        """Update the scope of multiple memories at once. Returns count updated."""
+        target = self._normalize_scope(scope)
+        updated = 0
+        for mid in memory_ids:
+            if mid in self.store.memories:
+                self.store.memories[mid]['scope'] = target
+                self.store.update_memory(mid, {'scope': target})
+                updated += 1
+        if updated:
+            self.flush()
+        return updated
+
+    def _remember_with_extraction(self, content: str, memory_type: str, scope: str,
                                   links: Optional[List], metadata: Optional[Dict],
                                   episode: Optional[str], deduplicate: bool, now: float,
                                   observed_at: Optional[float], valid_from: Optional[float], valid_to: Optional[float]) -> Memory:
@@ -562,7 +638,7 @@ class Synapse:
             if not facts:
                 logger.warning("No facts extracted from content, storing as-is")
                 return self._remember_single_content(
-                    content, memory_type, links, metadata, episode, deduplicate, now,
+                    content, memory_type, scope, links, metadata, episode, deduplicate, now,
                     observed_at, valid_from, valid_to,
                 )
 
@@ -582,7 +658,7 @@ class Synapse:
 
                 # Store each fact as a separate memory
                 fact_memory = self._remember_single_content(
-                    fact, memory_type, None, fact_metadata, episode, deduplicate, now,
+                    fact, memory_type, scope, None, fact_metadata, episode, deduplicate, now,
                     observed_at, valid_from, valid_to,
                 )
                 fact_memories.append(fact_memory)
@@ -611,7 +687,7 @@ class Synapse:
         except Exception as e:
             logger.warning("Fact extraction failed (%s), storing content as-is", e)
             return self._remember_single_content(
-                content, memory_type, links, metadata, episode, deduplicate, now,
+                content, memory_type, scope, links, metadata, episode, deduplicate, now,
                 observed_at, valid_from, valid_to,
             )
 
@@ -619,7 +695,7 @@ class Synapse:
         """Register an entity alias with the shared entity normalizer."""
         self._entity_normalizer.register_alias(alias, canonical)
     
-    def _remember_single_content(self, content: str, memory_type: str, 
+    def _remember_single_content(self, content: str, memory_type: str, scope: str,
                                  links: Optional[List], metadata: Optional[Dict],
                                  episode: Optional[str], deduplicate: bool, now: float,
                                  observed_at: Optional[float], valid_from: Optional[float], valid_to: Optional[float]) -> Memory:
@@ -644,6 +720,7 @@ class Synapse:
             'content': content,
             'memory_type': memory_type,
             'memory_level': 'instance',
+            'scope': scope,
             'strength': 1.0,
             'access_count': 0,
             'created_at': now,
@@ -736,6 +813,7 @@ class Synapse:
             content=content,
             memory_type=memory_type,
             memory_level='instance',
+            scope=scope,
             strength=1.0,
             access_count=0,
             created_at=now,
@@ -807,7 +885,8 @@ class Synapse:
                conflict_aware: bool = False,
                show_disputes: bool = False,
                exclude_conflicted: bool = False,
-               temporal: Optional[str] = None) -> List[Memory]:
+               temporal: Optional[str] = None,
+               scope: str = "private") -> List[Memory]:
         """
         Two-Stage Recall with adaptive blending (ported from V1):
           Stage 1A: BM25 word-index candidates  
@@ -815,8 +894,27 @@ class Synapse:
           Stage 2: Normalize, blend, apply effective strength, edge/episode expansion
         """
         now = time.time()
+        requested_scope = self._normalize_scope(scope)
+
+        def _scope_match(memory_data: Dict[str, Any]) -> bool:
+            return self._is_scope_visible(self._memory_scope(memory_data), requested_scope)
+
+        def _id_visible(memory_id: Optional[int]) -> bool:
+            if not isinstance(memory_id, int):
+                return False
+            memory_data = self.store.memories.get(memory_id)
+            if not isinstance(memory_data, dict):
+                return False
+            return _scope_match(memory_data)
+
         need_conflicts = conflict_aware or show_disputes or exclude_conflicted
         unresolved_contradictions = self.contradictions() if need_conflicts else []
+        if unresolved_contradictions:
+            unresolved_contradictions = [
+                contradiction for contradiction in unresolved_contradictions
+                if _id_visible(getattr(contradiction, "memory_id_a", None))
+                and _id_visible(getattr(contradiction, "memory_id_b", None))
+            ]
         conflicted_memory_ids = {
             contradiction.memory_id_a
             for contradiction in unresolved_contradictions
@@ -867,12 +965,18 @@ class Synapse:
                                    conflict_aware=conflict_aware,
                                    show_disputes=show_disputes,
                                    exclude_conflicted=exclude_conflicted,
-                                   temporal=None)
+                                   temporal=None,
+                                   scope=requested_scope)
                 if not base:
                     return []
                 head = base[0]
                 chain = self.history(head.id)
-                return _finalize_recall([entry["memory"] for entry in chain])
+                visible_chain = [
+                    entry["memory"]
+                    for entry in chain
+                    if _id_visible(getattr(entry.get("memory"), "id", None))
+                ]
+                return _finalize_recall(visible_chain)
 
             if temporal == "latest":
                 temporal_mode = "latest"
@@ -926,6 +1030,8 @@ class Synapse:
                     continue
                 if memory_type and memory_data.get('memory_type') != memory_type:
                     continue
+                if not _scope_match(memory_data):
+                    continue
                     
                 memory = self._memory_data_to_object(memory_data)
                 if memory.effective_strength >= min_strength:
@@ -944,7 +1050,8 @@ class Synapse:
         # Count total active memories
         total_memories = len([m for m in self.store.memories.values() 
                              if not m.get('consolidated', False)
-                             and (not memory_type or m.get('memory_type') == memory_type)])
+                             and (not memory_type or m.get('memory_type') == memory_type)
+                             and _scope_match(m)])
         
         if total_memories == 0:
             return []
@@ -958,6 +1065,7 @@ class Synapse:
                 if (
                     not mdata.get('consolidated', False)
                     and (not memory_type or mdata.get('memory_type') == memory_type)
+                    and _scope_match(mdata)
                 )
             ]
             graph_retriever = GraphRetriever(self.concept_graph)
@@ -990,6 +1098,7 @@ class Synapse:
                 if mid in self.store.memories
                 and not self.store.memories[mid].get('consolidated', False)
                 and (not memory_type or self.store.memories[mid].get('memory_type') == memory_type)
+                and _scope_match(self.store.memories[mid])
             }
             
             # Stage 1B: Concept-IDF candidates  
@@ -1005,6 +1114,7 @@ class Synapse:
                 if mid in self.store.memories
                 and not self.store.memories[mid].get('consolidated', False)
                 and (not memory_type or self.store.memories[mid].get('memory_type') == memory_type)
+                and _scope_match(self.store.memories[mid])
             }
             
             # Stage 1C: Embedding candidates (if available)
@@ -1017,6 +1127,7 @@ class Synapse:
                     if mid in self.store.memories
                     and not self.store.memories[mid].get('consolidated', False)
                     and (not memory_type or self.store.memories[mid].get('memory_type') == memory_type)
+                    and _scope_match(self.store.memories[mid])
                 }
                 # In classic mode, embeddings should not inject totally unrelated memories.
                 # Gate embedding-only candidates behind lexical support.
@@ -1225,7 +1336,8 @@ class Synapse:
                 if (memory_id in memory_scores and 
                     memory_id in self.store.memories and
                     not self.store.memories[memory_id].get('consolidated', False)):
-                    if not memory_type or self.store.memories[memory_id].get('memory_type') == memory_type:
+                    if ((not memory_type or self.store.memories[memory_id].get('memory_type') == memory_type)
+                        and _scope_match(self.store.memories[memory_id])):
                         memory_scores[memory_id] *= 1.05
                         if explain and memory_id in breakdowns:
                             breakdowns[memory_id].temporal_score = max(breakdowns[memory_id].temporal_score, 0.05)
@@ -1245,6 +1357,8 @@ class Synapse:
                 continue
                 
             if memory_type and memory_data.get('memory_type') != memory_type:
+                continue
+            if not _scope_match(memory_data):
                 continue
                 
             memory = self._memory_data_to_object(memory_data)
@@ -1331,12 +1445,14 @@ class Synapse:
         query: str,
         budget: int = 4000,
         policy: str = "balanced",
+        scope: str = "private",
     ) -> ContextPack:
         """Compile retrieved memories, graph context and summaries into a ContextPack."""
         return ContextCompiler(self).compile_context(
             query=query,
             budget=budget,
             policy=policy,
+            scope=scope,
         )
 
     def create_card(self, query: str, budget: int = 2000, policy: str = "balanced") -> ContextCard:
@@ -1352,6 +1468,7 @@ class Synapse:
             content=memory_data['content'],
             memory_type=memory_data['memory_type'],
             memory_level=memory_data.get('memory_level', 'instance'),
+            scope=self._memory_scope(memory_data),
             strength=memory_data['strength'],
             access_count=memory_data['access_count'],
             created_at=memory_data['created_at'],
@@ -1894,6 +2011,7 @@ class Synapse:
                 'content': summary,
                 'memory_type': 'consolidated',
                 'memory_level': 'pattern',
+                'scope': 'private',
                 'strength': boosted_strength,
                 'access_count': 0,
                 'created_at': now,
