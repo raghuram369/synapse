@@ -6,7 +6,7 @@
 pip install synapse-ai-memory
 ```
 
-![Version](https://img.shields.io/badge/version-0.8.0-blue) ![Tests](https://img.shields.io/badge/tests-305%20passing-brightgreen) ![Cloud Calls](https://img.shields.io/badge/cloud%20calls-0-green) ![Speed](https://img.shields.io/badge/recall-fast-lightgrey)
+![Version](https://img.shields.io/badge/version-0.8.0-blue) ![Tests](https://img.shields.io/badge/tests-370%20passing-brightgreen) ![Cloud Calls](https://img.shields.io/badge/cloud%20calls-0-green) ![Speed](https://img.shields.io/badge/recall-fast-lightgrey)
 
 ---
 
@@ -455,7 +455,7 @@ Multiple indexes. One fused result. No LLM in the loop.
 ## Quick Links
 
 - 📦 PyPI: `synapse-ai-memory`
-- 🧪 Tests: `tests/` (305 tests)
+- 🧪 Tests: `tests/` (370 tests)
 - 🔌 Integrations: `integrations/`
 - 🧰 Examples: `examples/`
 - 📈 Benchmarks: `bench/`
