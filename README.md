@@ -8,7 +8,7 @@
 pip install synapse-ai-memory
 ```
 
-![Version](https://img.shields.io/badge/version-0.6.0-blue) ![Tests](https://img.shields.io/badge/tests-167%20passing-brightgreen) ![Cloud Calls](https://img.shields.io/badge/cloud%20calls-0-green) ![Speed](https://img.shields.io/badge/recall-fast-lightgrey)
+![Version](https://img.shields.io/badge/version-0.7.0-blue) ![Tests](https://img.shields.io/badge/tests-240%20passing-brightgreen) ![Cloud Calls](https://img.shields.io/badge/cloud%20calls-0-green) ![Speed](https://img.shields.io/badge/recall-fast-lightgrey)
 
 ---
 
@@ -58,6 +58,11 @@ No API keys. No cloud. No setup. Just `pip install` and go.
 - 🌐 **Federation** — P2P agent memory sync via Merkle trees and vector clocks
 - ✂️ **Forgetting + privacy tools** — TTL, topic-forget, redaction, GDPR delete
 - 🔒 **Privacy-first** — zero cloud calls, zero telemetry. Your data never leaves your machine (optional local Ollama calls use localhost HTTP).
+- 🧰 **MCP memory appliance** — run as an MCP server and inspect health/tools with `serve`, `doctor`, `inspect`
+- 🧠 **Brain packs + checkpoints** — share topic packs (`.brain`) and checkpoint/restore memory state like Git for your agent's brain
+- 🗂️ **ContextPack cards** — deterministic, replayable context snapshots with markdown + JSON/binary formats and deck export
+- 🤖 **Chat-native command DSL** — `/mem` commands for Telegram, Discord, OpenClaw, NanoClaw, and other chat runtimes
+- 🔐 **Trust UX defaults** — localhost-first networking, explicit permission manifest, no setup scripts, auditable source
 - ⚡ **Fast local recall** — pure Python, zero dependencies, runs on a Raspberry Pi
 
 ---
@@ -184,6 +189,128 @@ synapse timeline --db ~/.synapse/synapse
 synapse stats --db ~/.synapse/synapse
 ```
 
+---
+
+## MCP Memory Appliance (v0.7.0)
+
+Synapse can run as an MCP memory appliance with a compact tool surface and built-in operability commands.
+
+```bash
+# 1) Run appliance as MCP server (stdio mode)
+synapse serve --db ~/.synapse/synapse_store
+
+# 2) Run appliance over HTTP JSON-RPC (localhost only)
+synapse serve --http --port 8765 --db ~/.synapse/synapse_store
+
+# 3) Health checks: storage, permissions, exports, performance
+synapse doctor --db ~/.synapse/synapse_store
+
+# 4) Inspect tool catalog + store stats
+synapse inspect --db ~/.synapse/synapse_store
+synapse inspect --db ~/.synapse/synapse_store --json
+```
+
+### Streamlined 8-Tool MCP Surface (appliance mode)
+
+These 8 tools make any agent look 2x smarter:
+
+- `remember` — store memory with normalization + contradiction-aware indexing
+- `compile_context` — build an LLM-ready context pack with summaries/evidence
+- `timeline` — fetch chronological memory timeline in a time window
+- `what_changed` — summarize new facts, belief shifts, and resolved conflicts
+- `contradictions` — list unresolved contradictions
+- `fact_history` — show how a fact evolved over time
+- `sleep` — run maintenance (consolidation/pruning controls)
+- `stats` — expose store health and drift indicators
+
+---
+
+## Brain Packs (`synapse pack`)
+
+Brain packs are the share object for Synapse: "Here is my project brain pack."
+
+```bash
+# Build a topic pack for the last 30 days
+synapse pack --topic "project-x" --range 30d --db ~/.synapse/synapse_store
+
+# Replay a pack to preview what would be injected
+synapse pack --replay project-x_2026-02-16.brain --db ~/.synapse/synapse_store
+
+# Compare two packs
+synapse pack --diff sprint1.brain sprint2.brain
+```
+
+`.brain` files are portable, diffable, and replayable for handoffs between agents/teammates.
+
+---
+
+## Checkpointable Memory (`synapse checkpoint`)
+
+Git for your agent's brain.
+
+```bash
+# Create a named snapshot
+synapse checkpoint create "before refactor" --db ~/.synapse/synapse_store
+
+# Compare two checkpoints (facts changed, beliefs evolved, contradictions)
+synapse checkpoint diff before-refactor after-refactor --db ~/.synapse/synapse_store
+
+# Restore a checkpoint
+synapse checkpoint restore before-refactor --confirm --db ~/.synapse/synapse_store
+```
+
+---
+
+## Chat Command DSL (`/mem`)
+
+Chat runtimes can expose Synapse through a tiny command surface:
+
+- `/mem remember <text>`
+- `/mem recall <query>`
+- `/mem pack <query> [budget]`
+- `/mem rewind <range> [topic]`
+- `/mem contradict`
+- `/mem history <subject>`
+- `/mem timeline [query]`
+- `/mem sleep`
+- `/mem stats`
+- `/mem forget <topic>`
+- `/mem search <query>`
+- `/mem export [path]`
+
+Works for Telegram, Discord, OpenClaw, NanoClaw, and other chat-native agent shells.
+
+---
+
+## ContextPack Cards
+
+ContextPack cards are deterministic, replayable context snapshots for sharing memory bundles across sessions.
+
+- Deterministic card IDs from memory/evidence signatures
+- Replay support to compare "then vs now" context injection
+- Markdown rendering for human review
+- JSON serialization + compact binary deck format for transport
+- Card decks for collections (`synapse card export deck.scdp`)
+
+```bash
+# Create a card from a query
+synapse card create "What changed in project-x?" --budget 1800 --db ~/.synapse/synapse_store
+
+# Show an existing card
+synapse card show card-abc123 --db ~/.synapse/synapse_store
+```
+
+---
+
+## Trust UX
+
+Synapse is designed for auditable local memory operations:
+
+- Permission manifest concept: explicit tool surface and expected write/read behavior
+- Localhost-only default for appliance/federation networking unless explicitly opted in
+- No setup scripts, no hidden installers
+- No cloud calls, no telemetry, auditable source
+
 ## Benchmarks
 
 The `bench/` suite measures retrieval quality (Recall@K, MRR) and reports end-to-end benchmark runtime; it does not claim or measure per-query latency.
@@ -307,7 +434,7 @@ Multiple indexes. One fused result. No LLM in the loop.
 ## Quick Links
 
 - 📦 PyPI: `synapse-ai-memory`
-- 🧪 Tests: `tests/` (167 core tests)
+- 🧪 Tests: `tests/` (240 tests)
 - 🔌 Integrations: `integrations/`
 - 🧰 Examples: `examples/`
 - 📈 Benchmarks: `bench/`
