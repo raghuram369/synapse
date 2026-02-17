@@ -36,15 +36,9 @@ def _resolve_db_path(db_path: str) -> str:
 def _mcp_command() -> List[str]:
     """Return the best command to launch synapse-mcp.
 
-    Prefers uvx (isolated, no PATH issues) > synapse-mcp entry point > python3 + file.
+    Uses the current Python interpreter (absolute path) + mcp_server module.
+    This is the most reliable approach — no PATH issues, no uvx/pipx dependency.
     """
-    import shutil
-
-    if shutil.which("uvx"):
-        return ["uvx", "--from", "synapse-ai-memory[mcp]", "synapse-mcp"]
-    if shutil.which("synapse-mcp"):
-        return ["synapse-mcp"]
-    # Fallback: use the current python interpreter + module file
     return [sys.executable, _mcp_server_path()]
 
 
