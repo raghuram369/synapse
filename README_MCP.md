@@ -12,6 +12,13 @@ synapse install windsurf    # auto-configures Windsurf
 synapse install continue    # auto-configures VS Code Continue
 ```
 
+The installer also creates a stable, absolute MCP launcher at:
+
+- `~/.synapse/bin/synapse-mcp`
+- managed runtime path: `~/.synapse/runtime/python` (symlink to the Python used to run the installer; fallback to a local copy if needed).
+
+No `PATH` changes are required.
+
 Or use the interactive wizard that auto-detects everything:
 
 ```bash
@@ -26,10 +33,10 @@ synapse setup
 python3 -m pip install mcp
 ```
 
-2. Sanity-check the server starts (waits for JSON-RPC on stdin):
+2. The installer creates a managed stable wrapper that should be used by clients:
 
 ```bash
-python3 mcp_server.py --data-dir ~/.synapse
+~/.synapse/bin/synapse-mcp --data-dir ~/.synapse
 ```
 
 3. Add to your client's MCP config:
@@ -38,9 +45,8 @@ python3 mcp_server.py --data-dir ~/.synapse
 {
   "mcpServers": {
     "synapse-memory": {
-      "command": "python3",
+      "command": "/absolute/path/to/.synapse/bin/synapse-mcp",
       "args": [
-        "/path/to/mcp_server.py",
         "--data-dir",
         "/Users/you/.synapse"
       ]

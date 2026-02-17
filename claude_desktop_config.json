@@ -1,13 +1,11 @@
 {
   "mcpServers": {
     "synapse-memory": {
-      "command": "python3",
+      "command": "/absolute/path/to/.synapse/bin/synapse-mcp",
       "args": [
-        "/ABSOLUTE/PATH/TO/synapse-mcp/mcp_server.py",
         "--data-dir",
-        "/ABSOLUTE/PATH/TO/.synapse"
+        "/absolute/path/to/.synapse"
       ]
     }
   }
 }
-

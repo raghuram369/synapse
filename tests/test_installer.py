@@ -25,7 +25,7 @@ class TestInstaller(unittest.TestCase):
     def test_client_installer_targets(self):
         self.assertEqual(
             set(installer.ClientInstaller.TARGETS.keys()),
-            {"claude", "openclaw", "nanoclaw"},
+            {"claude", "cursor", "windsurf", "continue", "openclaw", "nanoclaw", "telegram", "ollama"},
         )
 
     def test_install_claude_creates_config_when_missing(self):
@@ -33,6 +33,8 @@ class TestInstaller(unittest.TestCase):
         config_path = "/tmp/claude_desktop_config.json"
         write_handle = mock_open()()
         with patch("installer._claude_config_path", return_value=config_path), patch(
+            "installer._ensure_mcp_wrapper", return_value=os.path.expanduser("~/.synapse/bin/synapse-mcp")
+        ), patch(
             "installer.os.path.exists",
             side_effect=lambda _: False,
         ), patch("installer._backup_file") as backup, patch(
@@ -41,14 +43,51 @@ class TestInstaller(unittest.TestCase):
             out = self._capture_output(installer.install_claude, db_path)
 
         payload = self._parse_written_json(write_handle)
-        self.assertEqual(payload["mcpServers"]["synapse"]["command"], "python3")
+        self.assertEqual(payload["mcpServers"]["synapse"]["command"], os.path.expanduser("~/.synapse/bin/synapse-mcp"))
         self.assertEqual(
-            payload["mcpServers"]["synapse"]["args"][0],
-            os.path.abspath(os.path.join(os.path.dirname(installer.__file__), "mcp_server.py")),
+            payload["mcpServers"]["synapse"]["args"],
+            ["--data-dir", db_path],
         )
-        self.assertEqual(payload["mcpServers"]["synapse"]["args"][2], db_path)
         self.assertIn("Synapse installed for Claude Desktop. Restart Claude to activate.", out)
         backup.assert_not_called()
+
+    def test_continue_payload_uses_stable_wrapper_command(self):
+        with patch("installer._ensure_mcp_wrapper", return_value=os.path.expanduser("~/.synapse/bin/synapse-mcp")):
+            payload = installer._continue_payload("/tmp/synapse_db")
+        self.assertEqual(
+            payload["transport"]["command"],
+            os.path.expanduser("~/.synapse/bin/synapse-mcp"),
+        )
+        self.assertEqual(payload["transport"]["args"], ["--data-dir", "/tmp/synapse_db"])
+
+    def test_ensure_synapse_continue_replaces_legacy_python_entry(self):
+        with patch("installer._ensure_mcp_wrapper", return_value=os.path.expanduser("~/.synapse/bin/synapse-mcp")):
+            cfg = {
+            "experimental": {
+                "modelContextProtocolServers": [
+                    {
+                        "transport": {
+                            "type": "stdio",
+                            "command": "python3",
+                            "args": [
+                                os.path.abspath(os.path.join(os.path.dirname(installer.__file__), "mcp_server.py")),
+                                "--data-dir",
+                                "/tmp/old_db",
+                            ],
+                        },
+                    },
+                ]
+            }
+        }
+
+        updated = installer._ensure_synapse_continue(cfg, "/tmp/new_db")
+        servers = updated["experimental"]["modelContextProtocolServers"]
+        self.assertEqual(len(servers), 1)
+        self.assertEqual(
+            servers[0]["transport"]["command"],
+            os.path.expanduser("~/.synapse/bin/synapse-mcp"),
+        )
+        self.assertEqual(servers[0]["transport"]["args"], ["--data-dir", "/tmp/new_db"])
 
     def test_install_claude_backs_up_existing_config(self):
         db_path = "/tmp/synapse_db"
@@ -71,6 +110,8 @@ class TestInstaller(unittest.TestCase):
             return read_handle if "r" in mode else write_handle
 
         with patch("installer._claude_config_path", return_value=config_path), patch(
+            "installer._ensure_mcp_wrapper", return_value=os.path.expanduser("~/.synapse/bin/synapse-mcp")
+        ), patch(
             "installer.os.path.exists", return_value=True
         ), patch(
             "installer.shutil.copy2"
@@ -79,7 +120,7 @@ class TestInstaller(unittest.TestCase):
 
         copy2.assert_called_once_with(config_path, f"{config_path}.backup")
         payload = self._parse_written_json(write_handle)
-        self.assertEqual(payload["mcpServers"]["synapse"]["args"][2], db_path)
+        self.assertEqual(payload["mcpServers"]["synapse"]["args"], ["--data-dir", "/tmp/synapse_db"])
         self.assertIn("Synapse installed for Claude Desktop. Restart Claude to activate.", out)
 
     def test_install_claude_replaces_non_dict_mcp_servers(self):
@@ -93,6 +134,8 @@ class TestInstaller(unittest.TestCase):
             return read_handle if "r" in mode else write_handle
 
         with patch("installer._claude_config_path", return_value=config_path), patch(
+            "installer._ensure_mcp_wrapper", return_value=os.path.expanduser("~/.synapse/bin/synapse-mcp")
+        ), patch(
             "installer.os.path.exists", return_value=True
         ), patch("builtins.open", side_effect=open_side_effect), patch(
             "installer.shutil.copy2"
@@ -103,8 +146,8 @@ class TestInstaller(unittest.TestCase):
         payload = self._parse_written_json(write_handle)
         self.assertIsInstance(payload["mcpServers"], dict)
         self.assertEqual(
-            payload["mcpServers"]["synapse"]["args"][0],
-            os.path.abspath(os.path.join(os.path.dirname(installer.__file__), "mcp_server.py")),
+            payload["mcpServers"]["synapse"]["args"],
+            ["--data-dir", "/tmp/new_db"],
         )
 
     def test_install_openclaw_writes_skill_files(self):

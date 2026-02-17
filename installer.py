@@ -14,7 +14,25 @@ from typing import Any, Dict, List, Tuple
 
 
 def _python_binary() -> str:
+    # Kept for backward compatibility when detecting legacy MCP entries.
     return "python3"
+
+
+def _synapse_home() -> str:
+    return os.path.expanduser("~/.synapse")
+
+
+def _runtime_root() -> str:
+    return os.path.join(_synapse_home(), "runtime")
+
+def _runtime_bin_dir() -> str:
+    return os.path.join(_synapse_home(), "bin")
+
+def _runtime_python_path() -> str:
+    return os.path.join(_runtime_root(), "python")
+
+def _wrapper_script_path() -> str:
+    return os.path.join(_runtime_bin_dir(), "synapse-mcp")
 
 
 def _mcp_server_path() -> str:
@@ -23,7 +41,7 @@ def _mcp_server_path() -> str:
 
 def _default_data_dir() -> str:
     """Return the canonical shared Synapse data directory."""
-    return os.path.expanduser("~/.synapse")
+    return _synapse_home()
 
 
 def _resolve_db_path(db_path: str) -> str:
@@ -33,13 +51,59 @@ def _resolve_db_path(db_path: str) -> str:
     return os.path.abspath(db_path)
 
 
-def _mcp_command() -> List[str]:
-    """Return the best command to launch synapse-mcp.
+def _ensure_runtime_python() -> str:
+    """Create a stable python path for MCP launch if possible."""
+    runtime_python = _runtime_python_path()
+    source_python = sys.executable
+    if os.path.exists(runtime_python):
+        return runtime_python
 
-    Uses the current Python interpreter (absolute path) + mcp_server module.
-    This is the most reliable approach — no PATH issues, no uvx/pipx dependency.
-    """
-    return [sys.executable, _mcp_server_path()]
+    os.makedirs(os.path.dirname(runtime_python), exist_ok=True)
+    try:
+        os.symlink(source_python, runtime_python)
+    except (OSError, NotImplementedError):
+        try:
+            shutil.copy2(source_python, runtime_python)
+        except OSError:
+            return source_python
+
+    return runtime_python
+
+
+def _ensure_mcp_wrapper() -> str:
+    """Write/update the stable synapse-mcp wrapper entrypoint."""
+    wrapper_path = _wrapper_script_path()
+    runtime_python = _ensure_runtime_python()
+    mcp_server = _mcp_server_path()
+
+    os.makedirs(_runtime_root(), exist_ok=True)
+    os.makedirs(_runtime_bin_dir(), exist_ok=True)
+
+    wrapper_script = f"""#!/usr/bin/env sh
+set -eu
+
+# Managed MCP launcher for Synapse.
+exec {runtime_python!r} {mcp_server!r} "$@"
+"""
+
+    current = None
+    if os.path.exists(wrapper_path):
+        try:
+            with open(wrapper_path, "r", encoding="utf-8") as fp:
+                current = fp.read()
+        except OSError:
+            current = None
+
+    if current != wrapper_script:
+        with open(wrapper_path, "w", encoding="utf-8") as fp:
+            fp.write(wrapper_script)
+        os.chmod(wrapper_path, 0o755)
+
+    return wrapper_path
+
+def _mcp_command() -> List[str]:
+    """Return command to launch MCP via a stable absolute wrapper executable."""
+    return [_ensure_mcp_wrapper()]
 
 
 def _mcp_payload(db_path: str) -> Dict[str, Any]:
@@ -47,7 +111,7 @@ def _mcp_payload(db_path: str) -> Dict[str, Any]:
     cmd = _mcp_command()
     return {
         "command": cmd[0],
-        "args": cmd[1:] + ["--data-dir", db_path],
+        "args": ["--data-dir", db_path],
     }
 
 
@@ -58,9 +122,15 @@ def _continue_payload(db_path: str) -> Dict[str, Any]:
         "transport": {
             "type": "stdio",
             "command": cmd[0],
-            "args": cmd[1:] + ["--data-dir", db_path],
+            "args": ["--data-dir", db_path],
         }
     }
+
+
+def _is_legacy_python_entry(cmd: str, args: Any) -> bool:
+    if cmd not in {_python_binary(), os.path.basename(_python_binary()), sys.executable, os.path.basename(sys.executable)}:
+        return False
+    return isinstance(args, list) and _mcp_server_path() in args
 
 
 def _python_platform() -> str:
@@ -172,7 +242,7 @@ def _ensure_synapse_continue(payload: Dict[str, Any], db_path: str) -> Dict[str,
         if not isinstance(transport, dict):
             continue
         cmd = transport.get("command", "")
-        if cmd == "synapse-mcp" or (cmd == _python_binary() and isinstance(transport.get("args"), list) and _mcp_server_path() in transport.get("args", [])):
+        if _is_synapse_continue_entry(item):
             continue
         filtered.append(item)
     filtered.append(_continue_payload(db_path))
@@ -186,9 +256,11 @@ def _is_synapse_continue_entry(item: dict[str, Any]) -> bool:
     if not isinstance(transport, dict):
         return False
     cmd = transport.get("command", "")
+    if cmd == _wrapper_script_path():
+        return True
     if cmd == "synapse-mcp":
         return True
-    return cmd == _python_binary() and isinstance(transport.get("args"), list) and _mcp_server_path() in transport.get("args", [])
+    return _is_legacy_python_entry(cmd, transport.get("args"))
 
 
 def _verify_mcp_file(path: str, db_path: str) -> tuple[bool, str]:
