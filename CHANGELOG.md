@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.13.1 - 2026-02-16
+
+### Fixed
+- Packaging hotfix: include `policy_receipts.py` in wheel/sdist so `synapse onboard` and policy receipt imports work after pip install.
+- Removed stale `debug` module entry from packaging manifest.
+
 ## 0.13.0 - 2026-02-16
 
 ### Added

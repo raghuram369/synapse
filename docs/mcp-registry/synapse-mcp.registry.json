@@ -11,7 +11,7 @@
   },
   "license": "MIT",
   "keywords": ["memory", "privacy", "ai", "mcp", "agents"],
-  "version_range": ">=0.13.0",
+  "version_range": ">=0.13.1",
   "runtime": {
     "type": "python",
     "entrypoint": {
@@ -22,15 +22,15 @@
   "install": {
     "linux": {
       "method": "pip",
-      "command": "pip install synapse-ai-memory==0.13.0"
+      "command": "pip install synapse-ai-memory==0.13.1"
     },
     "darwin": {
       "method": "pip",
-      "command": "pip install synapse-ai-memory==0.13.0"
+      "command": "pip install synapse-ai-memory==0.13.1"
     },
     "windows": {
       "method": "pip",
-      "command": "python -m pip install synapse-ai-memory==0.13.0"
+      "command": "python -m pip install synapse-ai-memory==0.13.1"
     }
   },
   "docs_url": "https://github.com/raghuram369/synapse/blob/main/README_MCP.md",

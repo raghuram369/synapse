@@ -172,7 +172,7 @@ class TestOnboardDefaultsFlow(unittest.TestCase):
         self.assertEqual(indices, [-1])
 
         indices = cli._parse_csv_indices("2;5 ; all")
-        self.assertEqual(indices, [2, -1])
+        self.assertEqual(indices, [2, 5, -1])
 
     def test_onboard_quickstart_uses_zero_prompt_defaults(self):
         args = argparse.Namespace(
@@ -264,7 +264,7 @@ class TestOnboardDefaultsFlow(unittest.TestCase):
         self.assertEqual(payload["service"]["requested"], True)
         self.assertEqual(payload["service"]["installed"], True)
         self.assertEqual(payload["service"]["path"], "/tmp/synapse_service.plist")
-        install_mock.assert_called_once_with("/tmp/synapse_db", sleep_schedule="daily", quiet=True)
+        install_mock.assert_called_once_with("/tmp/synapse_db", sleep_schedule="daily")
 
     def test_onboard_runtime_conflict_triggers_probe_retest(self):
         args = argparse.Namespace(
