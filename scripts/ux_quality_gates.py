@@ -10,9 +10,11 @@ import argparse
 import argparse as argparse_module
 import io
 import json
+import os
+import tempfile
+from pathlib import Path
 import sys
 from contextlib import redirect_stdout
-from pathlib import Path
 from typing import Callable, Tuple
 from unittest.mock import patch
 
@@ -34,35 +36,41 @@ def _capture_stdout(callable_obj: Callable[[], None]) -> str:
 def check_scriptable_onboarding_flow() -> GateResult:
     """Run a deterministic onboarding simulation and assert machine-readable output."""
 
-    args = argparse.Namespace(
-        db="/tmp/synapse-smoke.db",
-        flow="quickstart",
-        non_interactive=True,
-        json=True,
-    )
+    with tempfile.TemporaryDirectory(prefix="synapse-ux-gate-") as workdir:
+        args = argparse.Namespace(
+            db=os.path.join(workdir, "synapse-smoke.db"),
+            flow="quickstart",
+            non_interactive=True,
+            json=True,
+        )
 
-    detect_result = [
-        ("claude", "Claude Desktop", True, False),
-        ("cursor", "Cursor", True, True),
-        ("openclaw", "OpenClaw", True, False),
-    ]
-    configured_calls: list[tuple[str, bool, bool]] = []
+        detect_result = [
+            ("claude", "Claude Desktop", True, False),
+            ("cursor", "Cursor", True, True),
+            ("openclaw", "OpenClaw", True, False),
+        ]
+        configured_calls: list[tuple[str, bool, bool]] = []
 
-    def _fake_installer(db_path: str, dry_run: bool = False, verify_only: bool = False) -> bool:
-        configured_calls.append((db_path, dry_run, verify_only))
-        return True
+        def _fake_installer(db_path: str, dry_run: bool = False, verify_only: bool = False) -> bool:
+            configured_calls.append((db_path, dry_run, verify_only))
+            return True
 
-    with patch.object(cli, "_detect_client_installs", return_value=detect_result):
-        with patch(
-            "installer.ClientInstaller.ENHANCED_TARGETS",
-            {"claude": _fake_installer, "openclaw": _fake_installer},
+        with patch.object(
+            cli,
+            "_onboard_state_path",
+            return_value=os.path.join(workdir, "onboard_defaults.json"),
         ):
-            with patch.object(
-                cli,
-                "_run_onboard_probe",
-                return_value=(True, {"start_count": "3", "end_count": "4"}),
-            ):
-                output = _capture_stdout(lambda: cli.cmd_onboard(args))
+            with patch.object(cli, "_detect_client_installs", return_value=detect_result):
+                with patch(
+                    "installer.ClientInstaller.ENHANCED_TARGETS",
+                    {"claude": _fake_installer, "openclaw": _fake_installer},
+                ):
+                    with patch.object(
+                        cli,
+                        "_run_onboard_probe",
+                        return_value=(True, {"start_count": "3", "end_count": "4"}),
+                    ):
+                        output = _capture_stdout(lambda: cli.cmd_onboard(args))
 
     try:
         payload = json.loads(output)
@@ -87,41 +95,96 @@ def check_scriptable_onboarding_flow() -> GateResult:
 def check_one_command_fix_messaging() -> GateResult:
     """Failing onboarding should include a one-command remediation hint."""
 
-    args = argparse.Namespace(
-        db="/tmp/synapse-smoke.db",
-        flow="quickstart",
-        non_interactive=True,
-        json=False,
-    )
+    with tempfile.TemporaryDirectory(prefix="synapse-ux-gate-") as workdir:
+        args = argparse.Namespace(
+            db=os.path.join(workdir, "synapse-smoke.db"),
+            flow="quickstart",
+            non_interactive=True,
+            json=False,
+        )
 
-    with patch.object(cli, "_detect_client_installs", return_value=[]):
         with patch.object(
             cli,
-            "_run_onboard_probe",
-            return_value=(False, {"error": "probe fail", "start_count": "0", "end_count": "0"}),
+            "_onboard_state_path",
+            return_value=os.path.join(workdir, "onboard_defaults.json"),
         ):
-            with patch("builtins.input", side_effect=AssertionError("input should not run")):
-                output = _capture_stdout(lambda: cli.cmd_onboard(args))
+            with patch.object(cli, "_detect_client_installs", return_value=[]):
+                with patch.object(
+                    cli,
+                    "_run_onboard_probe",
+                    return_value=(False, {"error": "probe fail", "start_count": "0", "end_count": "0"}),
+                ):
+                    with patch("builtins.input", side_effect=AssertionError("input should not run")):
+                        output = _capture_stdout(lambda: cli.cmd_onboard(args))
 
     if "synapse doctor --fix" not in output:
         return False, "Expected one-command fix hint 'synapse doctor --fix' in onboarding failure output"
     return True, "OK"
 
 
+def check_json_flow_is_output_only_no_stdout_noise() -> GateResult:
+    """Ensure JSON mode remains machine-readable with no ad-hoc stdout noise."""
+
+    with tempfile.TemporaryDirectory(prefix="synapse-ux-gate-") as workdir:
+        args = argparse.Namespace(
+            db=os.path.join(workdir, "synapse-smoke.db"),
+            flow="advanced",
+            non_interactive=True,
+            json=True,
+            policy_template="private",
+            default_scope="private",
+            default_sensitive="on",
+            service=False,
+            service_schedule="daily",
+        )
+
+        with patch.object(
+            cli,
+            "_onboard_state_path",
+            return_value=os.path.join(workdir, "onboard_defaults.json"),
+        ):
+            with patch.object(
+                cli,
+                "_detect_client_installs",
+                return_value=[],
+            ), \
+                patch.object(cli, "_write_onboard_defaults", return_value=None), \
+                patch.object(
+                    cli,
+                    "_run_onboard_probe",
+                    return_value=(True, {"start_count": "7", "end_count": "8"}),
+                ), \
+                patch.object(cli, "_maybe_repair_runtime_conflict", return_value=False):
+                output = _capture_stdout(lambda: cli.cmd_onboard(args))
+
+    try:
+        payload = json.loads(output)
+    except json.JSONDecodeError as exc:
+        return False, f"Expected pure JSON output with --json, parse failed: {exc}"
+
+    service = payload.get("service", {})
+    if service.get("requested") is not False:
+        return False, "Service should not be requested in this JSON-only smoke scenario"
+
+    return True, "OK"
+
+
 def check_no_manual_json_edits_for_top_integrations() -> GateResult:
     """Top integrations should stay in scriptable command path (no manual file-edit guidance)."""
 
-    args = argparse.Namespace(integrations_action="list", db="/tmp/synapse-smoke.db", json=False)
-    detect_result = [
-        ("claude", "Claude Desktop", True, True),
-        ("cursor", "Cursor", True, False),
-        ("windsurf", "Windsurf", False, False),
-        ("continue", "Continue", True, False),
-        ("openclaw", "OpenClaw", True, False),
-    ]
+    with tempfile.TemporaryDirectory(prefix="synapse-ux-gate-") as workdir:
+        args = argparse.Namespace(integrations_action="list", db=os.path.join(workdir, "synapse-store"), json=False)
 
-    with patch.object(cli, "_detect_client_installs", return_value=detect_result):
-        output = _capture_stdout(lambda: cli.cmd_integrations(args))
+        detect_result = [
+            ("claude", "Claude Desktop", True, True),
+            ("cursor", "Cursor", True, False),
+            ("windsurf", "Windsurf", False, False),
+            ("continue", "Continue", True, False),
+            ("openclaw", "OpenClaw", True, False),
+        ]
+
+        with patch.object(cli, "_detect_client_installs", return_value=detect_result):
+            output = _capture_stdout(lambda: cli.cmd_integrations(args))
 
     lowered = output.lower()
     forbidden = [
@@ -147,6 +210,7 @@ def run_all() -> int:
     checks = [
         ("scriptable_onboarding_flow", check_scriptable_onboarding_flow),
         ("one_command_fix_messaging", check_one_command_fix_messaging),
+        ("json_flow_no_stdout_noise", check_json_flow_is_output_only_no_stdout_noise),
         ("no_manual_json_edits_for_top_integrations", check_no_manual_json_edits_for_top_integrations),
     ]
 
@@ -177,6 +241,7 @@ def main(argv: list[str] | None = None) -> int:
         payload = {
             "scriptable_onboarding_flow": check_scriptable_onboarding_flow()[0],
             "one_command_fix_messaging": check_one_command_fix_messaging()[0],
+            "json_flow_no_stdout_noise": check_json_flow_is_output_only_no_stdout_noise()[0],
             "no_manual_json_edits_for_top_integrations": check_no_manual_json_edits_for_top_integrations()[0],
         }
         print(json.dumps(payload, indent=2, sort_keys=True))
