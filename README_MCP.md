@@ -5,25 +5,38 @@ Exposes Synapse AI Memory as MCP tools over stdio. Works with **Claude Desktop, 
 ## Quick Setup (recommended)
 
 ```bash
+curl -fsSL https://synapse.ai/install.sh | bash
+# or
 pip install synapse-ai-memory
-synapse install claude      # auto-configures Claude Desktop
-synapse install cursor      # auto-configures Cursor
-synapse install windsurf    # auto-configures Windsurf
-synapse install continue    # auto-configures VS Code Continue
-synapse integrations list    # health/status for supported host integrations
+
+# Optional: skip onboarding for non-interactive installs
+curl -fsSL https://synapse.ai/install.sh | bash -s -- --no-onboard --non-interactive
+
+synapse onboard --flow quickstart                 # one-pass interactive setup
+# For CI/non-interactive flows:
+synapse onboard --flow quickstart --non-interactive --json
+synapse install claude                           # auto-configures Claude Desktop
+synapse install cursor                           # auto-configures Cursor
+synapse install windsurf                         # auto-configures Windsurf
+synapse install continue                         # auto-configures VS Code Continue
+synapse integrations list                        # health/status for supported host integrations
 ```
 
 The installer also creates a stable, absolute MCP launcher at:
 
 - `~/.synapse/bin/synapse-mcp`
-- managed runtime path: `~/.synapse/runtime/python` (symlink to the Python used to run the installer; fallback to a local copy if needed).
+- managed runtime root: `~/.synapse/runtime`
 
 No `PATH` changes are required.
+
+`~/.synapse/bin/synapse-mcp` is the managed launcher used by default.
 
 Or use the interactive wizard that auto-detects everything:
 
 ```bash
-synapse onboard
+synapse onboard --flow quickstart
+# For CI/non-interactive flows:
+synapse onboard --flow quickstart --non-interactive --json
 ```
 
 ## Manual Setup
@@ -69,9 +82,31 @@ Integration maintenance commands:
 - `synapse integrations repair <name>`
 - `synapse integrations open <name>`
 
-Policy receipts CLI scaffold:
+Policy receipts CLI:
 - `synapse permit receipts --last 3`
 - `synapse permit receipts --last 3 --json`
+
+Receipt schema (v1):
+```json
+{
+  "receipt_id": "string",
+  "decision": "allow|deny",
+  "actor_id": "string",
+  "app_id": "string",
+  "purpose": "string",
+  "scope_requested": "string",
+  "scope_applied": "string",
+  "policy_id": "string",
+  "matched_rules": ["string"],
+  "memory_counts": {"considered": 0, "returned": 0, "blocked": 0},
+  "block_reasons": ["string"],
+  "timestamp": "ISO-8601"
+}
+```
+
+Doctor checks and remediation:
+- `synapse doctor` includes runtime checks for shadowed stdlib modules.
+- `synapse doctor --fix` rewrites configured MCP integration entries to managed launcher (`~/.synapse/bin/synapse-mcp`) when safe.
 
 ## Exposed Tools
 

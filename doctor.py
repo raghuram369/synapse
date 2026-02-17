@@ -7,6 +7,7 @@ all checks inspect local files / process state and avoid mutating state.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -14,7 +15,7 @@ import socket
 import sys
 import urllib.error
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 Status = str  # one of: "ok", "warn", "error"
 CheckResult = tuple[Status, str]
@@ -56,6 +57,79 @@ def _load_json_file(path: str) -> Optional[Dict[str, Any]]:
     except (OSError, json.JSONDecodeError):
         return None
     return None
+
+
+def _stdlib_root_paths() -> set[str]:
+    roots: set[str] = set()
+    stdlib_module = getattr(os, "__file__", None)
+    if isinstance(stdlib_module, str):
+        roots.add(os.path.dirname(stdlib_module))
+    # Base install locations can expose an additional top-level stdlib folder.
+    try:
+        import sysconfig
+
+        for key in ("stdlib", "platstdlib"):
+            p = sysconfig.get_path(key)
+            if isinstance(p, str) and p:
+                roots.add(os.path.abspath(p))
+    except Exception:
+        pass
+
+    for root in list(roots):
+        roots.add(os.path.abspath(root))
+    return roots
+
+
+def _is_stdlib_origin(origin: str) -> bool:
+    normalized = os.path.abspath(origin)
+    for root in _stdlib_root_paths():
+        root = os.path.abspath(root)
+        if normalized == root:
+            return True
+        prefix = root + os.sep
+        if normalized.startswith(prefix):
+            return True
+    return False
+
+
+def _shadowed_stdlib_modules(candidates: Sequence[str] | None = None) -> list[tuple[str, str]]:
+    module_names = tuple(candidates or (
+        "asyncio",
+        "json",
+        "logging",
+        "socket",
+        "email",
+        "multiprocessing",
+        "pathlib",
+        "concurrent",
+        "typing",
+    ))
+
+    shadowed: list[tuple[str, str]] = []
+    for name in module_names:
+        spec = importlib.util.find_spec(name)
+        if spec is None:
+            continue
+        origin = spec.origin
+        if not isinstance(origin, str):
+            continue
+        if origin in {"built-in", "frozen", "<frozen importlib._bootstrap>"}:
+            continue
+        if not os.path.isabs(origin):
+            continue
+        if _is_stdlib_origin(origin):
+            continue
+        if os.path.basename(origin).startswith("."):
+            continue
+        # A local shadowing candidate is usually a file/module path in project root or cwd
+        # (for packages, _ensure package location by search locations fallback).
+        shadowed.append((name, origin))
+    # De-duplicate while preserving order
+    deduped: list[tuple[str, str]] = []
+    for entry in shadowed:
+        if entry not in deduped:
+            deduped.append(entry)
+    return deduped
 
 
 def _contains_server_entry(payload: Dict[str, Any], server_name: str = "synapse") -> bool:
@@ -307,6 +381,15 @@ def check_python_version() -> CheckResult:
     return "ok", f"{major}.{minor}"
 
 
+def check_runtime_shadowed_stdlib() -> CheckResult:
+    shadowed = _shadowed_stdlib_modules()
+    if not shadowed:
+        return "ok", "no standard-library shadowing detected"
+
+    details = [f"{name} => {path}" for name, path in shadowed]
+    return "warn", "shadowed stdlib module(s): " + ", ".join(details)
+
+
 def gather_checks(configured_store: Optional[str]) -> List[Dict[str, Any]]:
     label_checks: list[tuple[str, CheckResult]] = [
         ("Synapse", check_synapse_version()),
@@ -319,6 +402,7 @@ def gather_checks(configured_store: Optional[str]) -> List[Dict[str, Any]]:
         ("Privacy", check_privacy_preset(configured_store)),
         ("Inbox mode", check_inbox_mode()),
         ("Python", check_python_version()),
+        ("Runtime", check_runtime_shadowed_stdlib()),
     ]
 
     results: List[Dict[str, Any]] = []
@@ -327,12 +411,64 @@ def gather_checks(configured_store: Optional[str]) -> List[Dict[str, Any]]:
     return results
 
 
+def _apply_doctor_fix(configured_store: Optional[str]) -> int:
+    shadowed = _shadowed_stdlib_modules()
+    if not shadowed:
+        print("ℹ️  No environment/runtime fixes were needed.")
+        return 0
+
+    fixed = 0
+    try:
+        from installer import _detect_targets, ClientInstaller
+
+        for name, configured in _detect_targets(configured_store or "~/.synapse").items():
+            installer = ClientInstaller.ENHANCED_TARGETS.get(name)
+            if not configured:
+                continue
+            if installer is None:
+                continue
+            try:
+                if installer(configured_store or "~/.synapse", dry_run=False, verify_only=False):
+                    fixed += 1
+            except TypeError:
+                # Older call signatures in older compatibility builds; best effort retry.
+                if installer(configured_store or "~/.synapse"):
+                    fixed += 1
+    except Exception as exc:
+        print(f"⚠️  Runtime repair partially failed: {exc}")
+
+    if fixed:
+        print(f"✅ Runtime repair completed for {fixed} integration config(s).")
+    else:
+        print("⚠️  Runtime repair could not auto-fix configured integrations.")
+
+    return fixed
+
+
+def _shadowed_runtime_action_message() -> str:
+    return "Run: synapse doctor --fix"
+
+
 def run_doctor(args) -> None:
     configured_store = getattr(args, "db", None)
     checks = gather_checks(configured_store)
 
+    if getattr(args, "fix", False):
+        fixed = _apply_doctor_fix(configured_store)
+        # Re-run checks after auto-fix attempt so output reflects current state.
+        if fixed:
+            checks = gather_checks(configured_store)
+
+    non_interactive = bool(getattr(args, "non_interactive", False))
+
     if getattr(args, "json", False):
+        # Add optional one-command remediation guidance to machine-readable output.
+        for check in checks:
+            if check["name"] == "Runtime" and check["status"] != "ok" and not check["message"].endswith("." + _shadowed_runtime_action_message()):
+                check["remediation"] = _shadowed_runtime_action_message()
         print(json.dumps(checks, indent=2, sort_keys=True))
+        if non_interactive and any(item["status"] == "error" for item in checks):
+            raise SystemExit(2)
         return
 
     icon = {
@@ -349,6 +485,8 @@ def run_doctor(args) -> None:
         status = check["status"]
         name = check["name"]
         message = check["message"]
+        if name == "Runtime" and status != "ok" and _shadowed_runtime_action_message() not in message:
+            message = f"{message}  ({_shadowed_runtime_action_message()})"
         prefix = icon.get(status, "❓")
         print(f"  {prefix} {name}: {message}")
 
@@ -358,6 +496,9 @@ def run_doctor(args) -> None:
     available = sum(1 for item in checks if item["status"] == "warn")
     not_found = sum(1 for item in checks if item["status"] == "error")
     print(f"  {connected} connected  {available} available  {not_found} not found")
+
+    if non_interactive and any(item["status"] == "error" for item in checks):
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":  # pragma: no cover

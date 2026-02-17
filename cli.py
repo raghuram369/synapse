@@ -2517,6 +2517,13 @@ INTEGRATION_LABELS = {
     "continue": "Continue",
     "openclaw": "OpenClaw",
 }
+INTEGRATION_TYPES = {
+    "claude": "MCP Client",
+    "cursor": "MCP Client",
+    "windsurf": "MCP Client",
+    "continue": "MCP Client",
+    "openclaw": "Channel",
+}
 
 
 def _integration_open_target(name: str) -> tuple[str, str]:
@@ -2544,21 +2551,53 @@ def _integration_open_target(name: str) -> tuple[str, str]:
 
 def _integration_rows(db_path: str) -> list[dict[str, str]]:
     detected_lookup = {key: (detected, configured) for key, _name, detected, configured in _detect_client_installs()}
+
+    def _last_check(path: str) -> str:
+        if not path or not os.path.exists(path):
+            return "--"
+        try:
+            age = max(0.0, time.time() - os.path.getmtime(path))
+        except OSError:
+            return "--"
+        if age < 60:
+            return "just now"
+        if age < 3600:
+            return f"{int(age // 60)}m ago"
+        if age < 86400:
+            return f"{int(age // 3600)}h ago"
+        return f"{int(age // 86400)}d ago"
+
     rows = []
     for key in INTEGRATION_KEYS:
+        label = INTEGRATION_LABELS[key]
         detected, configured = detected_lookup.get(key, (False, False))
         if configured:
-            health = "healthy"
+            status = "healthy"
+            actions = "open | reinstall | test"
+            target_kind, target_path = _integration_open_target(key)
+            if target_kind == "file":
+                check_ref = target_path
+            else:
+                check_ref = target_path if target_path else ""
+            last_check = _last_check(check_ref)
         elif detected:
-            health = "detected/not configured"
+            status = "not set"
+            actions = "install"
+            last_check = "--"
         else:
-            health = "not detected"
+            status = "not detected"
+            actions = "install"
+            last_check = "--"
+
         rows.append({
             "name": key,
-            "label": INTEGRATION_LABELS[key],
+            "label": label,
+            "type": INTEGRATION_TYPES.get(key, "Integration"),
+            "status": status,
+            "last_check": last_check,
+            "actions": actions,
             "detected": "yes" if detected else "no",
             "configured": "yes" if configured else "no",
-            "health": health,
             "db": db_path,
         })
     return rows
@@ -2578,11 +2617,11 @@ def cmd_integrations(args):
 
         print(_bold("🔌 Synapse integrations"))
         print(f"DB: {db_path}")
-        print("")
-        print(f"{'Integration':<16} {'Detected':<9} {'Configured':<11} Health")
-        print("-" * 64)
+        print()
+        print(f"{'Name':<16} {'Type':<12} {'Status':<14} {'Last Check':<10} Action")
+        print("-" * 72)
         for row in rows:
-            print(f"{row['label']:<16} {row['detected']:<9} {row['configured']:<11} {row['health']}")
+            print(f"{row['label']:<16} {row['type']:<12} {row['status']:<14} {row['last_check']:<10} {row['actions']}")
         print("\nNext steps: synapse integrations install <name> | test <name> | repair <name> | open <name>")
         return
 
@@ -2674,24 +2713,51 @@ def _receipt_skeleton(receipt: dict[str, Any]) -> dict[str, Any]:
     reasons = receipt.get("block_reasons")
     if not isinstance(reasons, list):
         reasons = []
+
     return {
-        "receipt_id": receipt.get("receipt_id", "unknown"),
-        "decision": receipt.get("decision", "unknown"),
-        "actor_id": receipt.get("actor_id", "unknown"),
-        "app_id": receipt.get("app_id", "unknown"),
-        "purpose": receipt.get("purpose", "unknown"),
-        "scope_requested": receipt.get("scope_requested", "unknown"),
-        "scope_applied": receipt.get("scope_applied", "unknown"),
-        "policy_id": receipt.get("policy_id", "unknown"),
-        "matched_rules": matched,
+        "receipt_id": str(receipt.get("receipt_id", "")),
+        "decision": str(receipt.get("decision", "unknown")).lower(),
+        "actor_id": str(receipt.get("actor_id", "")),
+        "app_id": str(receipt.get("app_id", "")),
+        "purpose": str(receipt.get("purpose", "")),
+        "scope_requested": str(receipt.get("scope_requested", "")),
+        "scope_applied": str(receipt.get("scope_applied", "")),
+        "policy_id": str(receipt.get("policy_id", "")),
+        "matched_rules": [str(item) for item in matched],
         "memory_counts": {
-            "considered": counts.get("considered", 0),
-            "returned": counts.get("returned", 0),
-            "blocked": counts.get("blocked", 0),
+            "considered": int(counts.get("considered", 0) or 0),
+            "returned": int(counts.get("returned", 0) or 0),
+            "blocked": int(counts.get("blocked", 0) or 0),
         },
-        "block_reasons": reasons,
-        "timestamp": receipt.get("timestamp", "unknown"),
+        "block_reasons": [str(item) for item in reasons],
+        "timestamp": str(receipt.get("timestamp", "")),
     }
+
+
+def _format_receipt_human(item: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+    out.append(_bold(f"RECEIPT {item['receipt_id'] or 'unknown'}"))
+    out.append(f"Decision: {str(item['decision']).upper()}")
+    out.append(f"Actor: {item['actor_id']}")
+    out.append(f"App: {item['app_id']}")
+    out.append(f"Purpose: {item['purpose']}")
+    out.append(f"Scope requested: {item['scope_requested']}")
+    out.append(f"Scope applied: {item['scope_applied']}")
+    out.append(f"Memories considered: {item['memory_counts']['considered']}")
+    out.append(f"Memories returned: {item['memory_counts']['returned']}")
+    out.append(f"Blocked: {item['memory_counts']['blocked']}")
+    matched = item.get("matched_rules") or []
+    if matched:
+        out.append(f"Policy matched: {item['policy_id']} ({', '.join(matched)})")
+    else:
+        out.append(f"Policy matched: {item['policy_id']}")
+    block_reasons = item.get("block_reasons") or []
+    if block_reasons:
+        out.append("Block reasons: " + ", ".join(block_reasons))
+    else:
+        out.append("Block reasons: none")
+    out.append(f"Timestamp: {item['timestamp']}")
+    return out
 
 
 def cmd_permit(args):
@@ -2707,39 +2773,36 @@ def cmd_permit(args):
 
     if getattr(args, "json", False):
         print(json.dumps({
+            "schema": "synapse.permit.receipt.v1",
             "available": bool(skeletons),
+            "count": len(skeletons),
             "source": source or None,
             "receipts": skeletons,
-            "note": "Policy receipt pipeline is scaffolded; this command reports receipts when permit logs are available.",
+            "notes": [
+                "Permit receipts are emitted by policy enforcement hooks when enabled.",
+                "If none are available yet, run read/write policy actions and check your policy logging configuration.",
+            ],
         }, indent=2))
         return
 
     if not skeletons:
         print(_bold("Policy receipts"))
         print("No permit receipts found yet.")
-        print("This Phase-1 command surface is available, but receipt generation may not be wired in this build.")
-        print("When available, expected source: permit_receipts.jsonl near your Synapse DB.")
+        print("No policy decisions were found at this db path.")
+        print("Expected source paths:")
+        print("  - <db>/permit_receipts.jsonl")
+        print("  - <db>/receipts/permit_receipts.jsonl")
+        print("  - ~/.synapse/permit_receipts.jsonl")
+        print("Hint: run policy-gated operations to emit permits, then retry this command.")
         return
 
     print(_bold("Policy receipts"))
     if source:
         print(f"Source: {source}")
     for item in skeletons:
-        print("\n" + _bold(f"RECEIPT {item['receipt_id']}"))
-        print(f"Decision: {str(item['decision']).upper()}")
-        print(f"Actor: {item['actor_id']}")
-        print(f"App: {item['app_id']}")
-        print(f"Purpose: {item['purpose']}")
-        print(f"Scope requested: {item['scope_requested']}")
-        print(f"Scope applied: {item['scope_applied']}")
-        print(f"Memories considered: {item['memory_counts']['considered']}")
-        print(f"Memories returned: {item['memory_counts']['returned']}")
-        print(f"Blocked: {item['memory_counts']['blocked']}")
-        if item['matched_rules']:
-            print(f"Policy matched: {item['policy_id']}.{item['matched_rules'][0]}")
-        else:
-            print(f"Policy matched: {item['policy_id']}")
-        print(f"Timestamp: {item['timestamp']}")
+        for line in _format_receipt_human(item):
+            print(line)
+        print()
 
 def cmd_install(args):
     from installer import ClientInstaller, install_all
@@ -2785,50 +2848,64 @@ def cmd_install(args):
         installer(args.db or APPLIANCE_DB_DEFAULT)
 
 
+
 def cmd_onboard(args):
     from installer import ClientInstaller, _resolve_db_path as _installer_resolve_db
 
     db_path = _installer_resolve_db(args.db or APPLIANCE_DB_DEFAULT)
+    flow = getattr(args, "flow", "advanced") or "advanced"
+    non_interactive = bool(getattr(args, "non_interactive", False))
+    json_output = bool(getattr(args, "json", False))
+
+    def emit(*_args, **_kwargs):
+        if not json_output:
+            print(*_args, **_kwargs)
+
     detected = _detect_client_installs()
     candidates = [entry for entry in detected if entry[0] in ClientInstaller.ENHANCED_TARGETS]
 
-    print(_bold("🧭 Synapse Onboarding Wizard"))
-    print()
-    print("Step 1: detect installed clients")
+    emit(_bold("🧭 Synapse Onboarding Wizard"))
+    emit()
+    emit("Step 1: detect installed clients")
 
     if not candidates:
-        print("  ℹ️  No client apps detected on this system.")
+        emit("  ℹ️  No client apps detected on this system.")
     else:
         for idx, (_key, name, app_detected, configured) in enumerate(candidates, 1):
             status = "configured" if configured else "not configured"
-            print(
+            emit(
                 f"  [{idx}] {name}: {'✅ installed' if app_detected else '⬜ not detected'} "
                 f"({status})"
             )
 
-    selected = []
+    selected: list[int] = []
     if not candidates:
-        print("     You can configure later with: synapse install <client>")
+        emit("     You can configure later with: synapse install <client>")
+    elif non_interactive or flow == "quickstart":
+        selected = [idx for idx, item in enumerate(candidates, 1) if item[2] and not item[3]]
+        if not selected:
+            selected = [idx for idx, item in enumerate(candidates, 1) if item[2]]
+        emit(f"\nSelected clients (auto): {', '.join(str(i) for i in selected) if selected else 'none'}")
     else:
         options = [idx for idx, item in enumerate(candidates, 1) if item[2]]
         pending = [idx for idx in options if not candidates[idx - 1][3]]
         default = ",".join(str(i) for i in pending) if pending else (",".join(str(i) for i in options) if options else "")
 
         if pending:
-            print(f"\nDetected clients not yet configured: {', '.join(str(i) for i in pending)}")
+            emit(f"\nDetected clients not yet configured: {', '.join(str(i) for i in pending)}")
             prompt = "Choose clients by number (e.g. 1,3) or press Enter for all pending: "
         elif options:
-            print("\nDetected clients are already configured.")
+            emit("\nDetected clients are already configured.")
             prompt = "Choose clients by number (e.g. 1,3) or press Enter to skip: "
         else:
-            print("\nNo installed clients detected from the above list.")
+            emit("\nNo installed clients detected from the above list.")
             prompt = ""
 
         if prompt:
             try:
                 text = input(prompt).strip()
             except (EOFError, KeyboardInterrupt):
-                print("\nCancelled.")
+                emit("\nCancelled.")
                 return
 
             if text.lower() in {"", "skip", "s", "none", "n"}:
@@ -2843,11 +2920,11 @@ def cmd_onboard(args):
                         try:
                             idx = int(tok)
                         except ValueError:
-                            print(f"Invalid selection: {tok}")
-                            print("Use numbers like 1 3 or 'all'.")
+                            emit(f"Invalid selection: {tok}")
+                            emit("Use numbers like 1 3 or 'all'.")
                             return
                         if idx not in options:
-                            print(f"Selection out of range: {idx}")
+                            emit(f"Selection out of range: {idx}")
                             return
                         parsed.append(idx)
                     selected = sorted(set(parsed))
@@ -2858,46 +2935,61 @@ def cmd_onboard(args):
             selected = [int(x) for x in default.split(",") if x]
 
     target_map = {i: item for i, item in enumerate(candidates, 1)}
+    configured_results = []
     if selected:
-        print(_cyan("\nStep 2: configuring selected clients"))
+        emit(_cyan("\nStep 2: configuring selected clients"))
         for idx in selected:
             key, name, _, _ = target_map[idx]
-            print(f"\n  -> {name}")
+            emit(f"\n  -> {name}")
             installer = ClientInstaller.ENHANCED_TARGETS.get(key)
             if installer is None:
-                print("    ⚠️  No installer available")
+                emit("    ⚠️  No installer available")
+                configured_results.append({"name": key, "configured": False, "error": "not available"})
                 continue
             try:
                 ok = installer(db_path, dry_run=False, verify_only=False)
             except Exception as exc:
-                print(f"    ❌ failed: {exc}")
+                emit(f"    ❌ failed: {exc}")
                 ok = False
-            print(f"    {'✅' if ok else '⚠️'} {'installed' if ok else 'installation may need attention'}")
+            emit(f"    {'✅' if ok else '⚠️'} {'installed' if ok else 'installation may need attention'}")
+            configured_results.append({"name": key, "configured": bool(ok), "error": None if ok else "installation may need attention"})
     else:
-        print("\nStep 2: skipping client configuration")
+        emit("\nStep 2: skipping client configuration")
 
-    print(_cyan("\nStep 3: verifying local store path"))
+    emit(_cyan("\nStep 3: verifying local store path"))
     passed, probe_status = _run_onboard_probe(db_path)
+
+    if json_output:
+        print(json.dumps({
+            "flow": flow,
+            "non_interactive": non_interactive,
+            "db_path": db_path,
+            "selected": [candidates[idx - 1][0] for idx in selected],
+            "configured": configured_results,
+            "probe": {
+                "passed": passed,
+                "details": probe_status,
+            },
+        }, indent=2))
+        return
+
     if passed:
-        print(f"  {_green('[PASS]')} Synapse remember/recall probe succeeded")
-        print(f"     store before: {probe_status.get('start_count', '?')} → after: {probe_status.get('end_count', '?')}")
-        print(_green("\n✅ Onboarding complete."))
-        print("\nNext steps:")
-        print("  synapse remember 'I prefer reminders after 6 PM'")
-        print("  synapse recall 'reminders after 6 PM'")
+        emit(f"  {_green('[PASS]')} Synapse remember/recall probe succeeded")
+        emit(f"     store before: {probe_status.get('start_count', '?')} → after: {probe_status.get('end_count', '?')}")
+        emit(_green("\n✅ Onboarding complete."))
+        emit("\nNext steps:")
+        emit("  synapse remember 'I prefer reminders after 6 PM'")
+        emit("  synapse recall 'reminders after 6 PM'")
     else:
-        print(f"  {_red('[FAIL]')} Synapse remember/recall probe failed")
+        emit(f"  {_red('[FAIL]')} Synapse remember/recall probe failed")
         if probe_status.get("error"):
-            print(f"     Error: {probe_status['error']}")
-        print("  Fix steps:")
-        print("     1) Verify your data path is writable: --db")
-        print("     2) Re-run: synapse install <client>")
-        print("     3) Run: synapse doctor")
-        print(_yellow("\nOnboarding completed with issues."))
+            emit(f"     Error: {probe_status['error']}")
+        emit("  Fix steps:")
+        emit("     1) Verify your data path is writable: --db")
+        emit("     2) Re-run: synapse install <client>")
+        emit("     3) Run: synapse doctor")
+        emit(_yellow("\nOnboarding completed with issues."))
 
-
-
-# ─── Start command ────────────────────────────────────────────────────────────
 def cmd_start(args):
     from installer import _detect_targets, _claude_config_path
 
@@ -3709,6 +3801,19 @@ def main():
 
     p = subparsers.add_parser('onboard', help='First-run onboarding wizard')
     p.add_argument('--db', default=APPLIANCE_DB_DEFAULT, help='Synapse database path')
+    p.add_argument(
+        '--flow',
+        choices=['quickstart', 'advanced'],
+        default='advanced',
+        help='Onboarding flow mode (quickstart=zero-prompt defaults, advanced=full control)',
+    )
+    p.add_argument(
+        '--non-interactive',
+        dest='non_interactive',
+        action='store_true',
+        help='Run without prompts (uses non-destructive defaults)',
+    )
+    p.add_argument('--json', action='store_true', help='Emit machine-readable JSON output')
 
     p_integrations = subparsers.add_parser('integrations', help='Manage client integrations')
     p_integrations.add_argument('--db', default=APPLIANCE_DB_DEFAULT, help='Synapse database path')

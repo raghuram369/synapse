@@ -3,6 +3,8 @@
 **Your AI's memory. Private. Portable. Federated.**
 
 ```bash
+curl -fsSL https://synapse.ai/install.sh | bash
+# or
 pip install synapse-ai-memory
 ```
 
@@ -16,10 +18,11 @@ pip install synapse-ai-memory
 
 ```bash
 pip install synapse-ai-memory
-synapse onboard                 # interactive first-run setup + verification
+synapse onboard --flow quickstart                     # interactive one-pass defaults
+synapse onboard --flow quickstart --non-interactive --json  # scriptable for CI
 # or
-synapse install claude          # auto-configures Claude Desktop
-synapse integrations list       # status view for Claude/Cursor/Windsurf/Continue/OpenClaw
+synapse install claude                               # auto-configures Claude Desktop
+synapse integrations list                            # status view for Claude/Cursor/Windsurf/Continue/OpenClaw
 ```
 
 ```python
@@ -30,6 +33,7 @@ s.recall("what theme?")         # → "I prefer dark mode" (6ms)
 ```
 
 That's it. Your AI now has persistent memory. No API keys. No cloud. No config files.
+
 
 ---
 
@@ -163,7 +167,7 @@ synapse inspect --db ~/.synapse/store --json      # tool catalog + stats
 ### Integrations + Policy Receipts (Phase-1 UX)
 
 ```bash
-synapse integrations list
+synapse integrations list                            # Name | Type | Status | Last Check | Action
 synapse integrations install claude
 synapse integrations test cursor
 synapse integrations repair windsurf
