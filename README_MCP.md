@@ -15,6 +15,7 @@ curl -fsSL https://synapse.ai/install.sh | bash -s -- --no-onboard --non-interac
 synapse onboard --flow quickstart                 # one-pass interactive setup
 # For CI/non-interactive flows:
 synapse onboard --flow quickstart --non-interactive --json
+synapse onboard --flow advanced --non-interactive --policy-template private --default-scope private --default-sensitive on
 synapse install claude                           # auto-configures Claude Desktop
 synapse install cursor                           # auto-configures Cursor
 synapse install windsurf                         # auto-configures Windsurf

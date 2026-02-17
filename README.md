@@ -18,8 +18,11 @@ pip install synapse-ai-memory
 
 ```bash
 pip install synapse-ai-memory
-synapse onboard --flow quickstart                     # interactive one-pass defaults
-synapse onboard --flow quickstart --non-interactive --json  # scriptable for CI
+synapse onboard --flow quickstart                     # interactive wizard (policy + integrations + defaults)
+synapse onboard --flow quickstart --non-interactive --json  # scriptable defaults for CI
+synapse onboard --flow advanced --non-interactive \
+  --policy-template private --default-scope private --default-sensitive on \
+  --enable-service --service-schedule daily --json
 # or
 synapse install claude                               # auto-configures Claude Desktop
 synapse integrations list                            # status view for Claude/Cursor/Windsurf/Continue/OpenClaw

@@ -22,7 +22,7 @@
 - [x] Add storage configuration step
 - [x] Add background service enablement step
 - [x] Add live remember/recall verification step
-- [ ] Add fail-safe repair flow with rerun prompt
+- [x] Add fail-safe repair flow with rerun prompt
 
 ## Integrations Hub
 - [x] Implement `synapse integrations` summary view

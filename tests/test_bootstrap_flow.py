@@ -186,7 +186,7 @@ class TestOnboardDefaultsFlow(unittest.TestCase):
                 patch("installer.ClientInstaller.ENHANCED_TARGETS", {"claude": fake_installer, "cursor": fake_installer}), \
                 patch("service.install_service", return_value="/tmp/synapse_service.plist"), \
                 patch.object(cli, "_run_onboard_probe", return_value=(True, {"start_count": "1", "end_count": "2"}),) , \
-                patch("builtins.input", side_effect=["2", "1", "", "", ""]):
+                patch("builtins.input", side_effect=["2", "1", "", "", "", ""]):
             out = _run_cmd(cli.cmd_onboard, args)
 
         fake_installer.assert_called_once()
@@ -220,7 +220,7 @@ class TestOnboardDefaultsFlow(unittest.TestCase):
                     ],
                 ), \
                 patch.object(cli, "_maybe_repair_runtime_conflict", return_value=True), \
-                patch("builtins.input", side_effect=["", "", ""]):
+                patch("builtins.input", side_effect=["", "", "", ""]):
             out = _run_cmd(cli.cmd_onboard, args)
 
         payload = json.loads(out)

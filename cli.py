@@ -29,8 +29,16 @@ from client import SynapseClient, SynapseRequestError
 from exceptions import SynapseConnectionError
 from demo_runner import DemoRunner
 from doctor import run_doctor
-from policy_receipts import load_receipts as load_policy_receipts
-from policy_receipts import normalize_receipt
+try:
+    from policy_receipts import load_receipts as load_policy_receipts
+    from policy_receipts import normalize_receipt
+except Exception:
+    def load_policy_receipts(*args, **kwargs):
+        return [], ""
+
+    def normalize_receipt(receipt):
+        return dict(receipt) if isinstance(receipt, dict) else {}
+
 
 
 # ─── Formatting helpers ──────────────────────────────────────────────────────
@@ -2778,34 +2786,38 @@ def _load_policy_receipts(last: int, db_path: str) -> tuple[list[dict[str, Any]]
 
 def _receipt_skeleton(receipt: dict[str, Any]) -> dict[str, Any]:
     normalized = normalize_receipt(receipt)
-    if "receipt_id" in normalized:
-        normalized["receipt_id"] = str(normalized["receipt_id"])
+    if normalized.get("receipt_id") is None:
+        normalized["receipt_id"] = None
     return normalized
 
 
 def _format_receipt_human(item: dict[str, Any]) -> list[str]:
     out: list[str] = []
-    out.append(_bold(f"RECEIPT {item['receipt_id'] or 'unknown'}"))
-    out.append(f"Decision: {str(item['decision']).upper()}")
-    out.append(f"Actor: {item['actor_id']}")
-    out.append(f"App: {item['app_id']}")
-    out.append(f"Purpose: {item['purpose']}")
-    out.append(f"Scope requested: {item['scope_requested']}")
-    out.append(f"Scope applied: {item['scope_applied']}")
-    out.append(f"Memories considered: {item['memory_counts']['considered']}")
-    out.append(f"Memories returned: {item['memory_counts']['returned']}")
-    out.append(f"Blocked: {item['memory_counts']['blocked']}")
+    def _as_text(value: Any) -> str:
+        return "n/a" if value in (None, "") else str(value)
+
+    out.append(_bold(f"RECEIPT {item.get('receipt_id') or 'unknown'}"))
+    out.append(f"Decision: {_as_text(item.get('decision')).upper()}")
+    out.append(f"Actor: {_as_text(item.get('actor_id'))}")
+    out.append(f"App: {_as_text(item.get('app_id'))}")
+    out.append(f"Purpose: {_as_text(item.get('purpose'))}")
+    out.append(f"Scope requested: {_as_text(item.get('scope_requested'))}")
+    out.append(f"Scope applied: {_as_text(item.get('scope_applied'))}")
+    counts = item.get("memory_counts") or {}
+    out.append(f"Memories considered: {counts.get('considered', 0)}")
+    out.append(f"Memories returned: {counts.get('returned', 0)}")
+    out.append(f"Blocked: {counts.get('blocked', 0)}")
     matched = item.get("matched_rules") or []
     if matched:
-        out.append(f"Policy matched: {item['policy_id']} ({', '.join(matched)})")
+        out.append(f"Policy matched: {_as_text(item.get('policy_id'))} ({', '.join(matched)})")
     else:
-        out.append(f"Policy matched: {item['policy_id']}")
+        out.append(f"Policy matched: {_as_text(item.get('policy_id'))}")
     block_reasons = item.get("block_reasons") or []
     if block_reasons:
         out.append("Block reasons: " + ", ".join(block_reasons))
     else:
         out.append("Block reasons: none")
-    out.append(f"Timestamp: {item['timestamp']}")
+    out.append(f"Timestamp: {_as_text(item.get('timestamp'))}")
     return out
 
 
@@ -2839,9 +2851,8 @@ def cmd_permit(args):
         print("No permit receipts found yet.")
         print("No policy decisions were found at this db path.")
         print("Expected source paths:")
-        print("  - <db>/permit_receipts.jsonl")
-        print("  - <db>/receipts/permit_receipts.jsonl")
-        print("  - ~/.synapse/permit_receipts.jsonl")
+        print(f"  - <db>/receipts/permit_receipts.jsonl")
+        print(f"  - ~/.synapse/receipts/permit_receipts.jsonl")
         print("Hint: run policy-gated operations to emit permits, then retry this command.")
         return
 
