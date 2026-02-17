@@ -608,6 +608,8 @@ One command → shareable proof. Outputs `report.md`, `transcript.md`, and `resu
 
 ## Benchmarks
 
+[Public safety + utility benchmark card](docs/benchmarks/safety-utility-benchmark-card.md)
+
 ```
 LOCOMO Benchmark (industry standard)
 ─────────────────────────────────────
@@ -743,6 +745,7 @@ Multiple indexes. One fused result. No LLM in the loop.
 - 🔌 Integrations: `integrations/`
 - 🧰 Examples: `examples/`
 - 📈 Benchmarks: `bench/`
+- 🧪 Safety + Utility benchmark card: `docs/benchmarks/safety-utility-benchmark-card.md`
 - 🧠 Triples + KG: `triples.py`, `graph_retrieval.py`
 - ✅ Truth maintenance: `contradictions.py`, `belief.py`, `evidence.py`
 - 💤 Sleep mode: `sleep.py`, `communities.py`

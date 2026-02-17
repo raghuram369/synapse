@@ -3,7 +3,7 @@
 ## Unreleased
 
 ### Added
-- _No entries yet._
+- Added public safety/utility benchmark card and machine-readable reporting template at `docs/benchmarks/safety-utility-benchmark-card.md` and `docs/benchmarks/safety-utility-benchmark-metadata.json`.
 
 ### Changed
 - _No entries yet._

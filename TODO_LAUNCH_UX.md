@@ -62,7 +62,7 @@
 - [x] Create starter repos (openai/langgraph/claude-mcp)
 - [x] Add compatibility matrix (OS/runtime/limitations)
 - [x] Add changelog section for breaking integration changes
-- [ ] Add public benchmark safety/utility card
+- [x] Add public benchmark safety/utility card
 - [x] Add installer docs for CI/non-interactive mode
 - [x] Add Python + TypeScript onboarding examples
 - [x] Add deep-link install pages for major clients

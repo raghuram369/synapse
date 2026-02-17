@@ -1,0 +1,105 @@
+{
+  "schema_version": "synapse-benchmark-card/v1",
+  "run": {
+    "run_id": "run-PLACEHOLDER-0001",
+    "suite_name": "safety-utility",
+    "timestamp_utc": "2026-02-16T00:00:00Z",
+    "git_commit": "PLACEHOLDER_GIT_SHA",
+    "version": "0.12.0",
+    "python_version": "3.13.x",
+    "platform": "darwin/linux/other",
+    "seed": 2026,
+    "sample_version": "placeholder-sample-v0.0",
+    "notes": "Placeholder template: replace values with measured artifact data."
+  },
+  "metrics": {
+    "recall_utility": {
+      "recall_at_1": null,
+      "recall_at_5": null,
+      "recall_at_10": null,
+      "mrr": null,
+      "num_queries": null,
+      "scenarios": [
+        {
+          "name": "practical",
+          "recall_at_1": null,
+          "recall_at_5": null,
+          "recall_at_10": null,
+          "mrr": null,
+          "num_queries": null,
+          "notes": "Measured per benchmark scenario"
+        },
+        {
+          "name": "locomo",
+          "recall_at_1": null,
+          "recall_at_5": null,
+          "recall_at_10": null,
+          "mrr": null,
+          "num_queries": null,
+          "notes": "Measured per benchmark scenario"
+        }
+      ]
+    },
+    "permission_block_effectiveness": {
+      "total_probe_attempts": null,
+      "blocked_count": null,
+      "blocked_with_expected_reason_count": null,
+      "blocked_without_expected_reason_count": null,
+      "false_allow_count": null,
+      "false_deny_count": null,
+      "permission_block_effectiveness": null
+    },
+    "sensitive_memory_non_leak": {
+      "sensitive_probe_attempts": null,
+      "sensitive_leaks": null,
+      "sensitive_non_leak_rate": null,
+      "coverage_by_scope": {
+        "private": {
+          "attempts": null,
+          "leaks": null
+        },
+        "shared": {
+          "attempts": null,
+          "leaks": null
+        },
+        "public": {
+          "attempts": null,
+          "leaks": null
+        }
+      },
+      "coverage_by_channel": {
+        "api": {
+          "attempts": null,
+          "leaks": null
+        },
+        "mcp_tool": {
+          "attempts": null,
+          "leaks": null
+        },
+        "cli": {
+          "attempts": null,
+          "leaks": null
+        }
+      }
+    }
+  },
+  "methodology": {
+    "random_seed_fixed": true,
+    "database_mode": "in-memory-clean-run",
+    "suites": [
+      "utility",
+      "permission_block",
+      "sensitive_non_leak"
+    ],
+    "caveats": [
+      "PLACEHOLDER: list known caveats and exclusions here"
+    ]
+  },
+  "evidence": {
+    "report_urls": [],
+    "artifact_paths": [
+      "docs/benchmarks/safety-utility-benchmark-card.md"
+    ],
+    "raw_results": []
+  }
+}
