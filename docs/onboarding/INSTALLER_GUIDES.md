@@ -85,16 +85,14 @@ execSync(cmd, {
 });
 ```
 
-## Deep-link install page placeholders
+## Deep-link install pages
 
-Use these deep-link placeholders once destination pages are published.
+Use these live install pages (copy/paste-ready snippets are embedded):
 
-- `https://synapse.ai/install/claude` (Claude Desktop install + MCP payload)
-- `https://synapse.ai/install/cursor` (Cursor MCP install)
-- `https://synapse.ai/install/windsurf` (Windsurf MCP install)
-- `https://synapse.ai/install/continue` (VS Code Continue install)
-- `https://synapse.ai/install/openai-starter` (OpenAI starter kit bootstrap)
-- `https://synapse.ai/install/langgraph-starter` (LangGraph starter kit bootstrap)
-- `https://synapse.ai/install/claude-mcp-starter` (Claude-MCP starter kit bootstrap)
+- https://synapse.ai/install/claude
+- https://synapse.ai/install/cursor
+- https://synapse.ai/install/windsurf
+- https://synapse.ai/install/continue
+- https://synapse.ai/install/openclaw
 
-These placeholders should map to static landing pages with copy/paste-ready install snippets.
+These pages point at in-repo landing docs under `docs/onboarding/install/`.
