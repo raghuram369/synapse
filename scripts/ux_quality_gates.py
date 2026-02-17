@@ -174,6 +174,97 @@ def check_json_flow_is_output_only_no_stdout_noise() -> GateResult:
     return True, "OK"
 
 
+def _fixture_permit_receipts() -> list[dict[str, object]]:
+    return [
+        {
+            "receipt_id": "fixture-allow-01",
+            "decision": "allow",
+            "actor_id": "qa-agent",
+            "app_id": "cursor",
+            "purpose": "memory_read",
+            "scope_requested": "private",
+            "scope_applied": "private",
+            "policy_id": "policy.read.strict.v1",
+            "matched_rules": ["rule.allow.read.01"],
+            "memory_counts": {"considered": 10, "returned": 10, "blocked": 0},
+            "block_reasons": [],
+            "timestamp": "2026-02-16T19:00:00Z",
+        },
+        {
+            "receipt_id": "fixture-deny-02",
+            "decision": "deny",
+            "actor_id": "qa-agent",
+            "app_id": "cursor",
+            "purpose": "memory_write",
+            "scope_requested": "public",
+            "scope_applied": "public",
+            "policy_id": "policy.write.strict.v1",
+            "matched_rules": ["rule.deny.sensitive.v1"],
+            "memory_counts": {"considered": 4, "returned": 0, "blocked": 4},
+            "block_reasons": ["sensitivity_policy_block", "block:policy.matched"],
+            "timestamp": "2026-02-16T19:01:00Z",
+        },
+    ]
+
+
+def check_json_permit_receipts_explainable_denials() -> GateResult:
+    """Permit receipts JSON should keep deny decisions explainable with block reasons."""
+
+    args = argparse.Namespace(permit_action="receipts", last=3, db="/tmp/synapse-store", json=True)
+    fixture = _fixture_permit_receipts()
+
+    with patch.object(cli, "_load_policy_receipts", return_value=(fixture, "/tmp/permit_receipts.jsonl")):
+        output = _capture_stdout(lambda: cli.cmd_permit(args))
+
+    try:
+        payload = json.loads(output)
+    except json.JSONDecodeError as exc:
+        return False, f"Expected valid JSON payload for permit receipts: {exc}"
+
+    if payload.get("schema") != "synapse.permit.receipt.v1":
+        return False, f"Unexpected schema: {payload.get('schema')}"
+
+    receipts = payload.get("receipts", [])
+    deny = next((item for item in receipts if item.get("decision") == "deny"), None)
+    if not deny:
+        return False, "Permit JSON output did not include a deny receipt"
+    if deny.get("receipt_id") != "fixture-deny-02":
+        return False, "Unexpected deny receipt id"
+
+    block_reasons = deny.get("block_reasons")
+    if not isinstance(block_reasons, list) or not block_reasons:
+        return False, "Deny receipt should include explanatory block reasons"
+    if "sensitivity_policy_block" not in block_reasons:
+        return False, "Expected 'sensitivity_policy_block' in deny block reasons"
+
+    if not payload.get("available"):
+        return False, "Permit JSON output should report availability when fixture records exist"
+    if payload.get("count", 0) != len(receipts):
+        return False, "Permit JSON count should match receipt payload length"
+
+    return True, "OK"
+
+
+def check_human_permit_receipts_explainable_denials() -> GateResult:
+    """Human permit receipts output should surface deny decisions and explanations."""
+
+    args = argparse.Namespace(permit_action="receipts", last=3, db="/tmp/synapse-store", json=False)
+    fixture = _fixture_permit_receipts()
+
+    with patch.object(cli, "_load_policy_receipts", return_value=(fixture, "/tmp/permit_receipts.jsonl")):
+        output = _capture_stdout(lambda: cli.cmd_permit(args))
+
+    lowered = output.lower()
+    if "decision: deny" not in lowered:
+        return False, "Human permit output should show DENY decision"
+    if "block reasons: sensitivity_policy_block" not in lowered:
+        return False, "Human permit output should include block reason strings"
+    if "fixture-deny-02" not in lowered:
+        return False, "Human permit output should include deny receipt id"
+
+    return True, "OK"
+
+
 def check_no_manual_json_edits_for_top_integrations() -> GateResult:
     """Top integrations should stay in scriptable command path (no manual file-edit guidance)."""
 
@@ -217,6 +308,8 @@ def run_all() -> int:
         ("one_command_fix_messaging", check_one_command_fix_messaging),
         ("json_flow_no_stdout_noise", check_json_flow_is_output_only_no_stdout_noise),
         ("no_manual_json_edits_for_top_integrations", check_no_manual_json_edits_for_top_integrations),
+        ("json_permit_receipts_explainable_denials", check_json_permit_receipts_explainable_denials),
+        ("human_permit_receipts_explainable_denials", check_human_permit_receipts_explainable_denials),
     ]
 
     failures: list[str] = []
@@ -248,6 +341,8 @@ def main(argv: list[str] | None = None) -> int:
             "one_command_fix_messaging": check_one_command_fix_messaging()[0],
             "json_flow_no_stdout_noise": check_json_flow_is_output_only_no_stdout_noise()[0],
             "no_manual_json_edits_for_top_integrations": check_no_manual_json_edits_for_top_integrations()[0],
+            "json_permit_receipts_explainable_denials": check_json_permit_receipts_explainable_denials()[0],
+            "human_permit_receipts_explainable_denials": check_human_permit_receipts_explainable_denials()[0],
         }
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0 if all(payload.values()) else 1

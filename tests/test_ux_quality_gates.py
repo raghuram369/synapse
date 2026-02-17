@@ -1,8 +1,10 @@
 import unittest
 
 from scripts.ux_quality_gates import (
-    check_one_command_fix_messaging,
+    check_human_permit_receipts_explainable_denials,
+    check_json_permit_receipts_explainable_denials,
     check_no_manual_json_edits_for_top_integrations,
+    check_one_command_fix_messaging,
     check_scriptable_onboarding_flow,
 )
 
@@ -18,6 +20,14 @@ class TestUxQualityGates(unittest.TestCase):
 
     def test_no_manual_json_edits_for_top_integrations(self):
         ok, detail = check_no_manual_json_edits_for_top_integrations()
+        self.assertTrue(ok, detail)
+
+    def test_json_permit_receipts_explainable_denials(self):
+        ok, detail = check_json_permit_receipts_explainable_denials()
+        self.assertTrue(ok, detail)
+
+    def test_human_permit_receipts_explainable_denials(self):
+        ok, detail = check_human_permit_receipts_explainable_denials()
         self.assertTrue(ok, detail)
 
 

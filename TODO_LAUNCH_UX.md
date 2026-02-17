@@ -73,4 +73,4 @@
 - [x] Add end-to-end onboarding smoke test to CI
 - [x] Add UX quality-gate checklist automation skeleton (scriptable flows, one-command fixes, no manual JSON edits for top integrations path)
 - [x] Document QA gate run commands for local and CI
-- [ ] Add explainable denials to quality checks
+- [x] Add explainable denials to quality checks

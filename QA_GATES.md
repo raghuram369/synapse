@@ -4,6 +4,9 @@
 
 Run the lightweight onboarding UX gate suite locally:
 
+> Note: quality gate coverage now includes `permit receipts` explainability checks (allow/deny with block reasons) in both JSON and human output modes.
+
+
 ```bash
 . .venv/bin/activate  # optional if using virtualenv
 python scripts/ux_quality_gates.py
