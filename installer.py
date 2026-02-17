@@ -21,19 +21,33 @@ def _mcp_server_path() -> str:
     return os.path.abspath(os.path.join(os.path.dirname(__file__), "mcp_server.py"))
 
 
+def _default_data_dir() -> str:
+    """Return the canonical shared Synapse data directory."""
+    return os.path.expanduser("~/.synapse")
+
+
+def _resolve_db_path(db_path: str) -> str:
+    """Ensure db_path is absolute. Default to ~/.synapse if relative/default."""
+    if db_path in ("./synapse_store", "synapse_store", ""):
+        return _default_data_dir()
+    return os.path.abspath(db_path)
+
+
 def _mcp_payload(db_path: str) -> Dict[str, Any]:
+    db_path = _resolve_db_path(db_path)
     return {
-        "command": _python_binary(),
-        "args": [_mcp_server_path(), "--db", db_path],
+        "command": "synapse-mcp",
+        "args": ["--db", db_path],
     }
 
 
 def _continue_payload(db_path: str) -> Dict[str, Any]:
+    db_path = _resolve_db_path(db_path)
     return {
         "transport": {
             "type": "stdio",
-            "command": _python_binary(),
-            "args": [_mcp_server_path(), "--db", db_path],
+            "command": "synapse-mcp",
+            "args": ["--db", db_path],
         }
     }
 
@@ -146,10 +160,9 @@ def _ensure_synapse_continue(payload: Dict[str, Any], db_path: str) -> Dict[str,
         transport = item.get("transport")
         if not isinstance(transport, dict):
             continue
-        if transport.get("command") == _python_binary() and isinstance(transport.get("args"), list):
-            transport_args = transport.get("args")
-            if transport_args and _mcp_server_path() in transport_args:
-                continue
+        cmd = transport.get("command", "")
+        if cmd == "synapse-mcp" or (cmd == _python_binary() and isinstance(transport.get("args"), list) and _mcp_server_path() in transport.get("args", [])):
+            continue
         filtered.append(item)
     filtered.append(_continue_payload(db_path))
     experimental["modelContextProtocolServers"] = filtered
@@ -161,7 +174,10 @@ def _is_synapse_continue_entry(item: dict[str, Any]) -> bool:
     transport = item.get("transport")
     if not isinstance(transport, dict):
         return False
-    return transport.get("command") == _python_binary() and isinstance(transport.get("args"), list) and _mcp_server_path() in transport.get("args", [])
+    cmd = transport.get("command", "")
+    if cmd == "synapse-mcp":
+        return True
+    return cmd == _python_binary() and isinstance(transport.get("args"), list) and _mcp_server_path() in transport.get("args", [])
 
 
 def _verify_mcp_file(path: str, db_path: str) -> tuple[bool, str]:
