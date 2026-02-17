@@ -41,7 +41,7 @@
 - [x] Implement `synapse permit receipts --last 3`
 - [x] Add human-friendly receipt output format
 - [x] Add JSON receipt output format
-- [ ] Add explainable allow/deny receipts for memory reads/writes
+- [x] Add explainable allow/deny receipts for memory reads/writes
 
 ## Memory Control Center (Inspector UX)
 - [ ] Add overview cards (total, pending review, blocked, integrations healthy)

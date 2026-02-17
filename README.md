@@ -181,7 +181,7 @@ synapse permit receipts --last 3 --json
 ```
 
 `integrations` provides a single command family for install/test/repair/open workflows.
-`permit receipts` currently exposes a receipt output shape (human + JSON skeleton) and will report data when receipt logs are available.
+`permit receipts` now captures allow/deny policy decisions for memory reads and writes, including matched rules, reasons, and counts where available.
 
 ---
 

@@ -49,6 +49,7 @@ from exceptions import SynapseValidationError
 from extractor import extract_facts
 from graph_retrieval import GraphRetriever
 from scope_policy import ScopePolicy
+from policy_receipts import write_receipt as write_policy_receipt
 from triples import TripleIndex, extract_triples
 from checkpoints import Checkpoint, CheckpointManager
 from indexes import (
@@ -1135,18 +1136,48 @@ class Synapse:
         if self.scope_policy is not None:
             requested_scope = self.scope_policy.enforce(requested_scope)
         caller_groups = self._normalize_shared_with(caller_groups)
+        requested_scope_original = self._normalize_scope(scope)
+
+        scope_decision_cache: Dict[int, tuple[bool, list[str]]] = {}
+        scope_counts = {
+            "considered": 0,
+            "blocked": 0,
+            "block_reasons": set[str](),
+        }
+
+        def _scope_decide(memory_data: Dict[str, Any]) -> tuple[bool, list[str]]:
+            memory_id = memory_data.get("id", -1)
+            try:
+                memory_id = int(memory_id)
+            except Exception:
+                memory_id = -1
+            cached = scope_decision_cache.get(memory_id)
+            if cached is not None:
+                return cached
+
+            reasons: list[str] = []
+            if bool(memory_data.get('sensitive', False)) and requested_scope != "private":
+                reasons.append("sensitive_memory_private_only")
+            elif not self._is_scope_visible(self._memory_scope(memory_data), requested_scope):
+                reasons.append("scope_too_restrictive")
+            elif requested_scope == "shared" and not self._shared_scope_match(memory_data, caller_groups):
+                reasons.append("shared_group_missing")
+
+            allowed = not reasons
+            scope_decision_cache[memory_id] = (allowed, reasons)
+
+            if memory_id != -1:
+                scope_counts["considered"] += 1
+                if not allowed:
+                    scope_counts["blocked"] += 1
+                    for reason in reasons:
+                        scope_counts["block_reasons"].add(reason)
+
+            return allowed, reasons
 
         def _scope_match(memory_data: Dict[str, Any]) -> bool:
-            # Sensitive memories are ONLY visible in private scope
-            if bool(memory_data.get('sensitive', False)) and requested_scope != "private":
-                return False
-            return (
-                self._is_scope_visible(self._memory_scope(memory_data), requested_scope)
-                and (
-                    requested_scope != "shared"
-                    or self._shared_scope_match(memory_data, caller_groups)
-                )
-            )
+            allowed, _reasons = _scope_decide(memory_data)
+            return allowed
 
         def _id_visible(memory_id: Optional[int]) -> bool:
             if not isinstance(memory_id, int):
@@ -1175,6 +1206,55 @@ class Synapse:
         dispute_map: Dict[int, List[Dict[str, Any]]] = {}
         if show_disputes:
             dispute_map = self._build_dispute_map(unresolved_contradictions)
+
+        def _emit_read_receipt(result_memories: List[Memory]) -> None:
+            returned = len(result_memories)
+            considered = int(scope_counts.get("considered", 0))
+            blocked = int(scope_counts.get("blocked", 0))
+            block_reasons = sorted(scope_counts.get("block_reasons", set()))
+            decision = "allow"
+            if considered > 0 and blocked > 0 and returned == 0:
+                decision = "deny"
+
+            matched_rules: list[str] = []
+            if self.scope_policy is not None:
+                matched_rules.append("scope_policy")
+            elif requested_scope != requested_scope_original:
+                matched_rules.append("scope_enforced")
+
+            if requested_scope != requested_scope_original:
+                matched_rules.append("scope_clamped")
+
+            if matched_rules == []:
+                matched_rules.append("scope_filter")
+
+            try:
+                write_policy_receipt(
+                    {
+                        "decision": decision,
+                        "actor_id": None,
+                        "app_id": "synapse",
+                        "purpose": "memory_read",
+                        "scope_requested": requested_scope_original,
+                        "scope_applied": requested_scope,
+                        "policy_id": "scope_filter.v1",
+                        "matched_rules": matched_rules,
+                        "memory_counts": {
+                            "considered": considered,
+                            "returned": returned,
+                            "blocked": blocked,
+                        },
+                        "block_reasons": block_reasons,
+                    },
+                    db_path=getattr(self, "path", None),
+                )
+            except Exception:
+                pass
+
+        def _finalize_and_record(result_memories: List[Memory]) -> List[Memory]:
+            final = _finalize_recall(result_memories)
+            _emit_read_receipt(final)
+            return final
 
         def _finalize_recall(result_memories: List[Memory]) -> List[Memory]:
             if exclude_conflicted:
@@ -1218,7 +1298,7 @@ class Synapse:
                                    scope=requested_scope,
                                    caller_groups=caller_groups)
                 if not base:
-                    return []
+                    return _finalize_and_record([])
                 head = base[0]
                 chain = self.history(head.id)
                 visible_chain = [
@@ -1226,7 +1306,7 @@ class Synapse:
                     for entry in chain
                     if _id_visible(getattr(entry.get("memory"), "id", None))
                 ]
-                return _finalize_recall(visible_chain)
+                return _finalize_and_record(visible_chain)
 
             if temporal == "latest":
                 temporal_mode = "latest"
@@ -1295,7 +1375,7 @@ class Synapse:
             result = _apply_temporal_filter([memory for _, memory in all_memories])
             result = result[:limit]
             
-            return _finalize_recall(result)
+            return _finalize_and_record(result)
         
         # Count total active memories
         total_memories = len([m for m in self.store.memories.values() 
@@ -1304,7 +1384,7 @@ class Synapse:
                              and _scope_match(m)])
         
         if total_memories == 0:
-            return []
+            return _finalize_and_record([])
         
         # ════════════════════════════════════════════════════════════
         #  STAGE 1: Candidate generation
@@ -1335,7 +1415,7 @@ class Synapse:
                 if float(score) > 0.0
             }
             if not bm25_scores:
-                return []
+                return _finalize_and_record([])
             concept_scores: Dict[int, float] = {}
             embedding_scores: Dict[int, float] = {}
         else:
@@ -1399,7 +1479,7 @@ class Synapse:
             if concept_scores:
                 concept_scores = {mid: score for mid, score in concept_scores.items() if mid in all_ids}
         if not all_ids:
-            return []
+            return _finalize_and_record([])
         
         # Adaptive concept weighting based on query length.
         # Graph mode already blends lexical/graph paths upstream.
@@ -1481,7 +1561,7 @@ class Synapse:
                     )
         
         if not lexical_scores:
-            return []
+            return _finalize_and_record([])
         
         # Load memory objects and compute multi-signal score components
         candidates = []
@@ -1518,7 +1598,7 @@ class Synapse:
             candidates.append((memory, provisional))
         
         if not candidates:
-            return []
+            return _finalize_and_record([])
         
         # Sort by score
         candidates.sort(key=lambda x: x[1], reverse=True)
@@ -1642,7 +1722,7 @@ class Synapse:
                 if memory.id in breakdowns:
                     memory.score_breakdown = breakdowns[memory.id]
 
-        return _finalize_recall(result_memories)
+        return _finalize_and_record(result_memories)
 
     def _attach_explain_evidence(self, memories: List[Memory]) -> None:
         """Attach evidence pointers to recalled memories when explain=True."""

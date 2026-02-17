@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
+from policy_receipts import write_receipt
+
 if TYPE_CHECKING:
     from synapse import Synapse
     from review_queue import ReviewQueue
@@ -502,18 +504,42 @@ def ingest(
         IngestResult indicating what happened to the text
     """
     
+    def _emit(decision: str, matched_rules: List[str], block_reasons: List[str], returned_count: int = 0, blocked_count: int = 0) -> None:
+        write_receipt(
+            {
+                "decision": decision,
+                "actor_id": None,
+                "app_id": source or "unknown",
+                "purpose": "memory_write",
+                "scope_requested": None,
+                "scope_applied": None,
+                "policy_id": f"memory_router.{policy}",
+                "matched_rules": matched_rules,
+                "memory_counts": {
+                    "considered": 1,
+                    "returned": returned_count,
+                    "blocked": blocked_count,
+                },
+                "block_reasons": block_reasons,
+            },
+            db_path=getattr(synapse, "path", None) if synapse is not None else None,
+        )
+
     # Security filters first (never store secrets)
     if SecretFilter.detect(text):
+        _emit("deny", [f"policy.{policy}.secret_filter"], ["secret_detected"])
         return IngestResult.REJECTED_SECRET
     
     # Ignore conversational fluff
     if FluffFilter.detect(text):
+        _emit("deny", [f"policy.{policy}.fluff_filter"], ["fluff_detected"])
         return IngestResult.IGNORED_FLUFF
     
     # Policy: off -> ignore everything
     if policy == "off":
+        _emit("deny", [f"policy.{policy}"], ["policy_disabled"])
         return IngestResult.IGNORED_POLICY
-    
+
     # Run all heuristic classifiers
     signals = [detector.classify(text) for detector in DETECTORS]
 
@@ -529,6 +555,7 @@ def ingest(
 
     # Route based on policy and confidence
     if policy == "minimal" and best.confidence < 0.8:
+        _emit("deny", ["policy.minimal.confidence_threshold"], ["policy_threshold"])
         return IngestResult.IGNORED_POLICY
 
     if policy == "review" or (policy == "auto" and best.confidence < 0.6):
@@ -542,9 +569,11 @@ def ingest(
                 "router_signals": [{"category": s.category, "confidence": s.confidence} for s in signals if s.should_store],
             })
             review_queue.submit(best.extracted, metadata)
+            _emit("allow", ["policy.review_queue"], [])
             return IngestResult.QUEUED_FOR_REVIEW
         else:
             # No review queue available for review path.
+            _emit("deny", ["policy.review_queue"], ["review_queue_unavailable"])
             return IngestResult.IGNORED_POLICY
     
     # Auto-store with high confidence
@@ -561,9 +590,11 @@ def ingest(
             memory_type=_to_memory_type(best.category),
             metadata=metadata,
         )
+        _emit("allow", [f"policy.{policy}.auto_store"], [])
         return IngestResult.STORED
     else:
         # No synapse instance provided
+        _emit("deny", [f"policy.{policy}.no_synapse"], ["backend_unavailable"])
         return IngestResult.IGNORED_POLICY
 
 

@@ -87,6 +87,8 @@ Policy receipts CLI:
 - `synapse permit receipts --last 3`
 - `synapse permit receipts --last 3 --json`
 
+Policy receipts capture allow/deny decisions for memory read and write policy gates and are persisted to the configured data dir.
+
 Receipt schema (v1):
 ```json
 {
