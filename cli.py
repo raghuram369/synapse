@@ -21,6 +21,8 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 from typing import Any, Dict
+import shutil
+import webbrowser
 
 from pathlib import Path
 from client import SynapseClient, SynapseRequestError
@@ -352,6 +354,120 @@ def _run_store_latency_probe(db_path: str) -> float:
                 pass
 
     return (end - start) * 1000.0
+
+
+def _detect_client_installs() -> list[tuple[str, str, bool, bool]]:
+    """Return candidate onboarding clients and install/configuration status.
+
+    Returns tuples of (target_key, display_name, app_detected, already_configured).
+    """
+    try:
+        from installer import (
+            _detect_targets,
+            _resolve_db_path,
+            _claude_config_path,
+            _cursor_candidates,
+            _windsurf_candidates,
+            _continue_candidates,
+            _openclaw_workspace_root,
+        )
+    except Exception:
+        return []
+
+    db_path = _resolve_db_path(APPLIANCE_DB_DEFAULT)
+    installed_targets = _detect_targets(db_path)
+
+    def _has_file(path: str) -> bool:
+        return bool(path and os.path.exists(path))
+
+    detected: list[tuple[str, str, bool, bool]] = []
+
+    detected.append((
+        "claude",
+        "Claude Desktop",
+        _has_file(_claude_config_path()) or bool(shutil.which("claude") or shutil.which("Claude") or shutil.which("claude_desktop")),
+        bool(installed_targets.get("claude")),
+    ))
+    detected.append((
+        "cursor",
+        "Cursor",
+        bool(shutil.which("cursor") or shutil.which("Cursor") or any(_has_file(p) for p in _cursor_candidates())),
+        bool(installed_targets.get("cursor")),
+    ))
+    detected.append((
+        "windsurf",
+        "Windsurf",
+        bool(shutil.which("windsurf") or shutil.which("Windsurf") or any(_has_file(p) for p in _windsurf_candidates())),
+        bool(installed_targets.get("windsurf")),
+    ))
+    detected.append((
+        "continue",
+        "Continue",
+        bool(_has_file(_continue_candidates()[0]) or shutil.which("continue") or shutil.which("continue-cli")),
+        bool(installed_targets.get("continue")),
+    ))
+
+    openclaw_root = _openclaw_workspace_root()
+    detected.append((
+        "openclaw",
+        "OpenClaw",
+        bool(os.path.isdir(openclaw_root)),
+        bool(installed_targets.get("openclaw")),
+    ))
+
+    return detected
+
+
+def _run_onboard_probe(db_path: str) -> tuple[bool, dict[str, str]]:
+    """Run a live remember+recall probe against the local Synapse store."""
+    from synapse import Synapse
+
+    probe_token = f"onboard-{int(time.time())}-{os.getpid()}"
+    probe_text = f"Synapse onboard probe {probe_token}"
+    probe_id = None
+    found_in_recall = False
+    status: dict[str, str] = {}
+
+    s: Synapse | None = None
+    try:
+        s = Synapse(db_path)
+        start_count = s.count()
+        memory = s.remember(
+            probe_text,
+            deduplicate=False,
+            metadata={"_onboard_probe": True, "_probe_id": probe_token},
+        )
+        probe_id = memory.id
+        recall_results = s.recall(probe_text, limit=5)
+        found_in_recall = any(
+            getattr(item, "id", None) == probe_id or getattr(item, "content", "") == probe_text
+            for item in recall_results
+        )
+        if probe_id is not None:
+            try:
+                s.forget(probe_id)
+            except Exception:
+                pass
+        end_count = s.count()
+        status.update({
+            "start_count": str(start_count),
+            "end_count": str(end_count),
+            "probe_id": str(probe_id or "-"),
+        })
+        s.flush()
+        return bool(found_in_recall), status
+    except Exception as exc:
+        if s is not None and probe_id is not None:
+            try:
+                s.forget(probe_id)
+            except Exception:
+                pass
+        status["error"] = str(exc)
+        return False, status
+    finally:
+        if s is not None:
+            s.close()
+
 
 
 def _check_store_files(db_path: str) -> list[tuple[str, str, str]]:
@@ -2391,6 +2507,240 @@ def cmd_verify(args):
     verify_artifact(args.file)
 
 
+
+
+INTEGRATION_KEYS = ("claude", "cursor", "windsurf", "continue", "openclaw")
+INTEGRATION_LABELS = {
+    "claude": "Claude Desktop",
+    "cursor": "Cursor",
+    "windsurf": "Windsurf",
+    "continue": "Continue",
+    "openclaw": "OpenClaw",
+}
+
+
+def _integration_open_target(name: str) -> tuple[str, str]:
+    from installer import (
+        _claude_config_path,
+        _cursor_candidates,
+        _windsurf_candidates,
+        _continue_candidates,
+        _openclaw_workspace_root,
+        _resolve_candidate_paths,
+    )
+
+    if name == "claude":
+        return ("file", _claude_config_path())
+    if name == "cursor":
+        return ("file", _resolve_candidate_paths(_cursor_candidates()))
+    if name == "windsurf":
+        return ("file", _resolve_candidate_paths(_windsurf_candidates()))
+    if name == "continue":
+        return ("file", _resolve_candidate_paths(_continue_candidates()))
+    if name == "openclaw":
+        return ("dir", _openclaw_workspace_root())
+    raise ValueError(f"Unknown integration: {name}")
+
+
+def _integration_rows(db_path: str) -> list[dict[str, str]]:
+    detected_lookup = {key: (detected, configured) for key, _name, detected, configured in _detect_client_installs()}
+    rows = []
+    for key in INTEGRATION_KEYS:
+        detected, configured = detected_lookup.get(key, (False, False))
+        if configured:
+            health = "healthy"
+        elif detected:
+            health = "detected/not configured"
+        else:
+            health = "not detected"
+        rows.append({
+            "name": key,
+            "label": INTEGRATION_LABELS[key],
+            "detected": "yes" if detected else "no",
+            "configured": "yes" if configured else "no",
+            "health": health,
+            "db": db_path,
+        })
+    return rows
+
+
+def cmd_integrations(args):
+    from installer import ClientInstaller
+
+    action = getattr(args, "integrations_action", None) or "list"
+    db_path = getattr(args, "db", APPLIANCE_DB_DEFAULT) or APPLIANCE_DB_DEFAULT
+
+    if action == "list":
+        rows = _integration_rows(db_path)
+        if getattr(args, "json", False):
+            print(json.dumps({"db_path": db_path, "integrations": rows}, indent=2))
+            return
+
+        print(_bold("🔌 Synapse integrations"))
+        print(f"DB: {db_path}")
+        print("")
+        print(f"{'Integration':<16} {'Detected':<9} {'Configured':<11} Health")
+        print("-" * 64)
+        for row in rows:
+            print(f"{row['label']:<16} {row['detected']:<9} {row['configured']:<11} {row['health']}")
+        print("\nNext steps: synapse integrations install <name> | test <name> | repair <name> | open <name>")
+        return
+
+    name = getattr(args, "name", "")
+    if name not in INTEGRATION_KEYS:
+        print(f"Unknown integration target: {name}")
+        raise SystemExit(1)
+
+    if action == "install":
+        installer = ClientInstaller.ENHANCED_TARGETS.get(name)
+        if installer is None:
+            print(f"No installer available for {name}")
+            raise SystemExit(1)
+        installer(db_path, dry_run=getattr(args, "dry_run", False), verify_only=False)
+        return
+
+    if action == "test":
+        installer = ClientInstaller.ENHANCED_TARGETS.get(name)
+        if installer is None:
+            print(f"No verification routine available for {name}")
+            raise SystemExit(1)
+        ok = installer(db_path, dry_run=False, verify_only=True)
+        if not ok:
+            raise SystemExit(1)
+        return
+
+    if action == "repair":
+        installer = ClientInstaller.ENHANCED_TARGETS.get(name)
+        if installer is None:
+            print(f"No repair routine available for {name}")
+            raise SystemExit(1)
+        ok = installer(db_path, dry_run=False, verify_only=False)
+        if not ok:
+            raise SystemExit(1)
+        return
+
+    if action == "open":
+        kind, target = _integration_open_target(name)
+        if kind == "file":
+            parent = os.path.dirname(target)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+        else:
+            os.makedirs(target, exist_ok=True)
+        opened = webbrowser.open(f"file://{target}")
+        print(f"{INTEGRATION_LABELS[name]}: {target}")
+        if not opened:
+            print("(Could not auto-open. Open the path above manually.)")
+        return
+
+    print("Usage: synapse integrations [list|install|test|repair|open]")
+    raise SystemExit(1)
+
+
+def _load_policy_receipts(last: int, db_path: str) -> tuple[list[dict[str, Any]], str]:
+    candidates = [
+        os.path.join(os.path.dirname(os.path.abspath(db_path)), "permit_receipts.jsonl"),
+        os.path.join(os.path.dirname(os.path.abspath(db_path)), "receipts", "permit_receipts.jsonl"),
+        os.path.expanduser("~/.synapse/permit_receipts.jsonl"),
+    ]
+
+    records: list[dict[str, Any]] = []
+    source = ""
+    for path in candidates:
+        if not os.path.exists(path):
+            continue
+        source = path
+        with open(path, "r", encoding="utf-8") as fp:
+            for line in fp:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                    if isinstance(payload, dict):
+                        records.append(payload)
+                except json.JSONDecodeError:
+                    continue
+    return records[-last:], source
+
+
+def _receipt_skeleton(receipt: dict[str, Any]) -> dict[str, Any]:
+    counts = receipt.get("memory_counts")
+    if not isinstance(counts, dict):
+        counts = {}
+    matched = receipt.get("matched_rules")
+    if not isinstance(matched, list):
+        matched = []
+    reasons = receipt.get("block_reasons")
+    if not isinstance(reasons, list):
+        reasons = []
+    return {
+        "receipt_id": receipt.get("receipt_id", "unknown"),
+        "decision": receipt.get("decision", "unknown"),
+        "actor_id": receipt.get("actor_id", "unknown"),
+        "app_id": receipt.get("app_id", "unknown"),
+        "purpose": receipt.get("purpose", "unknown"),
+        "scope_requested": receipt.get("scope_requested", "unknown"),
+        "scope_applied": receipt.get("scope_applied", "unknown"),
+        "policy_id": receipt.get("policy_id", "unknown"),
+        "matched_rules": matched,
+        "memory_counts": {
+            "considered": counts.get("considered", 0),
+            "returned": counts.get("returned", 0),
+            "blocked": counts.get("blocked", 0),
+        },
+        "block_reasons": reasons,
+        "timestamp": receipt.get("timestamp", "unknown"),
+    }
+
+
+def cmd_permit(args):
+    action = getattr(args, "permit_action", None)
+    if action != "receipts":
+        print("Usage: synapse permit receipts --last N [--json]")
+        raise SystemExit(1)
+
+    last = max(1, int(getattr(args, "last", 3) or 3))
+    db_path = getattr(args, "db", APPLIANCE_DB_DEFAULT) or APPLIANCE_DB_DEFAULT
+    receipts, source = _load_policy_receipts(last=last, db_path=db_path)
+    skeletons = [_receipt_skeleton(r) for r in receipts]
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "available": bool(skeletons),
+            "source": source or None,
+            "receipts": skeletons,
+            "note": "Policy receipt pipeline is scaffolded; this command reports receipts when permit logs are available.",
+        }, indent=2))
+        return
+
+    if not skeletons:
+        print(_bold("Policy receipts"))
+        print("No permit receipts found yet.")
+        print("This Phase-1 command surface is available, but receipt generation may not be wired in this build.")
+        print("When available, expected source: permit_receipts.jsonl near your Synapse DB.")
+        return
+
+    print(_bold("Policy receipts"))
+    if source:
+        print(f"Source: {source}")
+    for item in skeletons:
+        print("\n" + _bold(f"RECEIPT {item['receipt_id']}"))
+        print(f"Decision: {str(item['decision']).upper()}")
+        print(f"Actor: {item['actor_id']}")
+        print(f"App: {item['app_id']}")
+        print(f"Purpose: {item['purpose']}")
+        print(f"Scope requested: {item['scope_requested']}")
+        print(f"Scope applied: {item['scope_applied']}")
+        print(f"Memories considered: {item['memory_counts']['considered']}")
+        print(f"Memories returned: {item['memory_counts']['returned']}")
+        print(f"Blocked: {item['memory_counts']['blocked']}")
+        if item['matched_rules']:
+            print(f"Policy matched: {item['policy_id']}.{item['matched_rules'][0]}")
+        else:
+            print(f"Policy matched: {item['policy_id']}")
+        print(f"Timestamp: {item['timestamp']}")
+
 def cmd_install(args):
     from installer import ClientInstaller, install_all
 
@@ -2435,8 +2785,119 @@ def cmd_install(args):
         installer(args.db or APPLIANCE_DB_DEFAULT)
 
 
-# ─── Start command ────────────────────────────────────────────────────────────
+def cmd_onboard(args):
+    from installer import ClientInstaller, _resolve_db_path as _installer_resolve_db
 
+    db_path = _installer_resolve_db(args.db or APPLIANCE_DB_DEFAULT)
+    detected = _detect_client_installs()
+    candidates = [entry for entry in detected if entry[0] in ClientInstaller.ENHANCED_TARGETS]
+
+    print(_bold("🧭 Synapse Onboarding Wizard"))
+    print()
+    print("Step 1: detect installed clients")
+
+    if not candidates:
+        print("  ℹ️  No client apps detected on this system.")
+    else:
+        for idx, (_key, name, app_detected, configured) in enumerate(candidates, 1):
+            status = "configured" if configured else "not configured"
+            print(
+                f"  [{idx}] {name}: {'✅ installed' if app_detected else '⬜ not detected'} "
+                f"({status})"
+            )
+
+    selected = []
+    if not candidates:
+        print("     You can configure later with: synapse install <client>")
+    else:
+        options = [idx for idx, item in enumerate(candidates, 1) if item[2]]
+        pending = [idx for idx in options if not candidates[idx - 1][3]]
+        default = ",".join(str(i) for i in pending) if pending else (",".join(str(i) for i in options) if options else "")
+
+        if pending:
+            print(f"\nDetected clients not yet configured: {', '.join(str(i) for i in pending)}")
+            prompt = "Choose clients by number (e.g. 1,3) or press Enter for all pending: "
+        elif options:
+            print("\nDetected clients are already configured.")
+            prompt = "Choose clients by number (e.g. 1,3) or press Enter to skip: "
+        else:
+            print("\nNo installed clients detected from the above list.")
+            prompt = ""
+
+        if prompt:
+            try:
+                text = input(prompt).strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\nCancelled.")
+                return
+
+            if text.lower() in {"", "skip", "s", "none", "n"}:
+                selected = []
+            else:
+                raw = [t.strip() for t in text.replace(",", " ").split() if t.strip()]
+                if any(tok.lower() in {"all", "a"} for tok in raw):
+                    selected = options
+                else:
+                    parsed = []
+                    for tok in raw:
+                        try:
+                            idx = int(tok)
+                        except ValueError:
+                            print(f"Invalid selection: {tok}")
+                            print("Use numbers like 1 3 or 'all'.")
+                            return
+                        if idx not in options:
+                            print(f"Selection out of range: {idx}")
+                            return
+                        parsed.append(idx)
+                    selected = sorted(set(parsed))
+
+        if not default:
+            selected = []
+        elif not selected:
+            selected = [int(x) for x in default.split(",") if x]
+
+    target_map = {i: item for i, item in enumerate(candidates, 1)}
+    if selected:
+        print(_cyan("\nStep 2: configuring selected clients"))
+        for idx in selected:
+            key, name, _, _ = target_map[idx]
+            print(f"\n  -> {name}")
+            installer = ClientInstaller.ENHANCED_TARGETS.get(key)
+            if installer is None:
+                print("    ⚠️  No installer available")
+                continue
+            try:
+                ok = installer(db_path, dry_run=False, verify_only=False)
+            except Exception as exc:
+                print(f"    ❌ failed: {exc}")
+                ok = False
+            print(f"    {'✅' if ok else '⚠️'} {'installed' if ok else 'installation may need attention'}")
+    else:
+        print("\nStep 2: skipping client configuration")
+
+    print(_cyan("\nStep 3: verifying local store path"))
+    passed, probe_status = _run_onboard_probe(db_path)
+    if passed:
+        print(f"  {_green('[PASS]')} Synapse remember/recall probe succeeded")
+        print(f"     store before: {probe_status.get('start_count', '?')} → after: {probe_status.get('end_count', '?')}")
+        print(_green("\n✅ Onboarding complete."))
+        print("\nNext steps:")
+        print("  synapse remember 'I prefer reminders after 6 PM'")
+        print("  synapse recall 'reminders after 6 PM'")
+    else:
+        print(f"  {_red('[FAIL]')} Synapse remember/recall probe failed")
+        if probe_status.get("error"):
+            print(f"     Error: {probe_status['error']}")
+        print("  Fix steps:")
+        print("     1) Verify your data path is writable: --db")
+        print("     2) Re-run: synapse install <client>")
+        print("     3) Run: synapse doctor")
+        print(_yellow("\nOnboarding completed with issues."))
+
+
+
+# ─── Start command ────────────────────────────────────────────────────────────
 def cmd_start(args):
     from installer import _detect_targets, _claude_config_path
 
@@ -3187,6 +3648,7 @@ def main():
     p = subparsers.add_parser('doctor', help='Check Synapse health and client integrations')
     p.add_argument('--db', help='Memory store path (default: ~/.synapse)')
     p.add_argument('--json', action='store_true', help='Machine-readable JSON output')
+    p.add_argument('--fix', action='store_true', help='Auto-fix onboarding/runtime issues when detected')
 
     p = subparsers.add_parser('serve', help='Start MCP memory appliance')
     p.add_argument('--db', default=APPLIANCE_DB_DEFAULT, help='Storage path')
@@ -3244,6 +3706,35 @@ def main():
     p.add_argument('--list', action='store_true', help='Show available install targets')
     p.add_argument('--dry-run', action='store_true', help='Preview changes without applying')
     p.add_argument('--verify-only', action='store_true', help='Only verify existing installation')
+
+    p = subparsers.add_parser('onboard', help='First-run onboarding wizard')
+    p.add_argument('--db', default=APPLIANCE_DB_DEFAULT, help='Synapse database path')
+
+    p_integrations = subparsers.add_parser('integrations', help='Manage client integrations')
+    p_integrations.add_argument('--db', default=APPLIANCE_DB_DEFAULT, help='Synapse database path')
+    p_integrations.add_argument('--json', action='store_true', help='Machine-readable output for list')
+    integrations_sub = p_integrations.add_subparsers(dest='integrations_action', help='Integration actions')
+    integrations_sub.add_parser('list', help='List supported integrations and status')
+
+    p_i_install = integrations_sub.add_parser('install', help='Install an integration')
+    p_i_install.add_argument('name', choices=list(INTEGRATION_KEYS))
+    p_i_install.add_argument('--dry-run', action='store_true', help='Preview install changes')
+
+    p_i_test = integrations_sub.add_parser('test', help='Verify an integration is healthy')
+    p_i_test.add_argument('name', choices=list(INTEGRATION_KEYS))
+
+    p_i_repair = integrations_sub.add_parser('repair', help='Re-apply integration configuration')
+    p_i_repair.add_argument('name', choices=list(INTEGRATION_KEYS))
+
+    p_i_open = integrations_sub.add_parser('open', help='Open integration config/location')
+    p_i_open.add_argument('name', choices=list(INTEGRATION_KEYS))
+
+    p_permit = subparsers.add_parser('permit', help='Inspect policy permit decisions')
+    permit_sub = p_permit.add_subparsers(dest='permit_action', help='Permit actions')
+    p_receipts = permit_sub.add_parser('receipts', help='Show recent policy receipts (Phase-1 scaffold)')
+    p_receipts.add_argument('--last', type=int, default=3, help='Number of recent receipts')
+    p_receipts.add_argument('--json', action='store_true', help='Emit JSON skeleton output')
+    p_receipts.add_argument('--db', default=APPLIANCE_DB_DEFAULT, help='Synapse database path')
 
     p = subparsers.add_parser('import-wizard', help='Interactive import wizard')
     p.add_argument('--db', help='Synapse AI Memory database path')
@@ -3360,6 +3851,9 @@ def main():
         'diff': cmd_diff,
         'pack': cmd_pack,
         'install': cmd_install,
+        'onboard': cmd_onboard,
+        'integrations': cmd_integrations,
+        'permit': cmd_permit,
         'doctor': run_doctor,
         'start': cmd_start,
         'import-wizard': cmd_import_wizard,

@@ -10,6 +10,7 @@ synapse install claude      # auto-configures Claude Desktop
 synapse install cursor      # auto-configures Cursor
 synapse install windsurf    # auto-configures Windsurf
 synapse install continue    # auto-configures VS Code Continue
+synapse integrations list    # health/status for supported host integrations
 ```
 
 The installer also creates a stable, absolute MCP launcher at:
@@ -22,7 +23,7 @@ No `PATH` changes are required.
 Or use the interactive wizard that auto-detects everything:
 
 ```bash
-synapse setup
+synapse onboard
 ```
 
 ## Manual Setup
@@ -60,6 +61,17 @@ Config locations:
 - **Cursor**: `~/.cursor/mcp.json`
 - **Windsurf**: `~/.windsurf/mcp.json`
 - **Continue (VS Code)**: `~/.continue/config.json`
+
+Integration maintenance commands:
+- `synapse integrations list`
+- `synapse integrations install <claude|cursor|windsurf|continue|openclaw>`
+- `synapse integrations test <name>`
+- `synapse integrations repair <name>`
+- `synapse integrations open <name>`
+
+Policy receipts CLI scaffold:
+- `synapse permit receipts --last 3`
+- `synapse permit receipts --last 3 --json`
 
 ## Exposed Tools
 

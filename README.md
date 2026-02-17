@@ -16,7 +16,10 @@ pip install synapse-ai-memory
 
 ```bash
 pip install synapse-ai-memory
+synapse onboard                 # interactive first-run setup + verification
+# or
 synapse install claude          # auto-configures Claude Desktop
+synapse integrations list       # status view for Claude/Cursor/Windsurf/Continue/OpenClaw
 ```
 
 ```python
@@ -156,6 +159,22 @@ synapse inspect --db ~/.synapse/store --json      # tool catalog + stats
 ```
 
 8 tools that make any agent 2x smarter: `remember`, `compile_context`, `timeline`, `what_changed`, `contradictions`, `fact_history`, `sleep`, `stats`.
+
+### Integrations + Policy Receipts (Phase-1 UX)
+
+```bash
+synapse integrations list
+synapse integrations install claude
+synapse integrations test cursor
+synapse integrations repair windsurf
+synapse integrations open continue
+
+synapse permit receipts --last 3
+synapse permit receipts --last 3 --json
+```
+
+`integrations` provides a single command family for install/test/repair/open workflows.
+`permit receipts` currently exposes a receipt output shape (human + JSON skeleton) and will report data when receipt logs are available.
 
 ---
 
