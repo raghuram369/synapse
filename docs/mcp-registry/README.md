@@ -12,27 +12,38 @@ This folder contains the metadata artifact used for MCP Registry submission.
 2. Update the `version_range`, `version` pins, and package URL fields whenever `synapse-ai-memory` is released.
 3. Confirm `entrypoint.command` points to the stable wrapper command (`synapse-mcp`), not the raw `mcp_server.py` script.
 
-## Validate before publish (local)
+## Publish helper
+
+Use this local helper before opening the external MCP Registry portal:
 
 ```bash
-cat docs/mcp-registry/synapse-mcp.registry.json | jq .
-python -m json.tool docs/mcp-registry/synapse-mcp.registry.json >/tmp/manifest.pretty.json
+python3 scripts/publish_mcp_registry.py --dry-run
 ```
 
-## Publishing workflow (planned)
+This performs non-destructive validation and prints the final payload to stdout.
 
-1. Publish a release of `synapse-ai-memory` first (PyPI + signed package artifacts).
-2. Open MCP Registry submission PR with the exact JSON payload in this folder.
-3. Confirm the submission references:
-   - repository: `https://github.com/raghuram369/synapse`
-   - docs: `README_MCP.md`
-   - support: issue tracker
-4. Verify registry ingestion from client installs and `synapse install ...` flows.
+Optional output artifact for review/re-use:
 
-## External action required
+```bash
+python3 scripts/publish_mcp_registry.py --dry-run --out /tmp/synapse-mcp.registry.payload.json
+```
 
-Actual registry publishing is external to this repo. Remaining steps are:
+Checks performed:
 
-- authenticate to the MCP Registry maintainer flow
-- submit/approve `synapse-mcp.registry.json`
-- validate visibility from at least one MCP host after approval
+- Registry schema URL + required keys
+- Name/license/description consistency with project metadata
+- Entrypoint command exists and aligns with package scripts (`synapse-mcp`)
+- Install commands align to current package version from `pyproject.toml`
+- Version compatibility window (`version_range`) aligns with current package version
+- URL fields are valid HTTPS targets
+
+## Manual submission steps (external portal action)
+
+Actual registry publishing remains external to this repo. When the helper passes:
+
+1. Open the MCP Registry submission portal.
+2. Submit `synapse-mcp.registry.json` (or the generated payload copy).
+3. Continue through maintainer review/approval.
+4. Verify visibility from at least one MCP host.
+
+Exact portal endpoint may vary by org process; use the configured registry maintainer flow.

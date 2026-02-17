@@ -59,6 +59,7 @@
 
 ## Ecosystem Assets + Distribution
 - [x] Publish MCP server metadata to MCP Registry
+- [x] Add MCP Registry publish validation + dry-run prep helper script and checklist
 - [x] Create starter repos (openai/langgraph/claude-mcp)
 - [x] Add compatibility matrix (OS/runtime/limitations)
 - [x] Add changelog section for breaking integration changes

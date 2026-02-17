@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "name": "synapse",
   "display_name": "Synapse AI Memory",
-  "description": "Privacy-first local memory MCP server for Claude Desktop, Cursor, Windsurf, and MCP clients.",
+  "description": "Privacy-first local memory MCP server for Claude Desktop, Cursor, Windsurf, Continue, OpenClaw, and MCP clients.",
   "homepage": "https://github.com/raghuram369/synapse",
   "repository": {
     "type": "git",
@@ -17,9 +17,6 @@
     "entrypoint": {
       "command": "synapse-mcp",
       "args": ["--data-dir", "~/.synapse"]
-    },
-    "environment": {
-      "SYNAPSE_AUTO_INSTALL": "1"
     }
   },
   "install": {
