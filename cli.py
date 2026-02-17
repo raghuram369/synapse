@@ -29,6 +29,8 @@ from client import SynapseClient, SynapseRequestError
 from exceptions import SynapseConnectionError
 from demo_runner import DemoRunner
 from doctor import run_doctor
+from policy_receipts import load_receipts as load_policy_receipts
+from policy_receipts import normalize_receipt
 
 
 # ─── Formatting helpers ──────────────────────────────────────────────────────
@@ -469,6 +471,99 @@ def _run_onboard_probe(db_path: str) -> tuple[bool, dict[str, str]]:
             s.close()
 
 
+
+
+
+def _onboard_state_path() -> str:
+    return os.path.join(APPLIANCE_STATE_DIR, "onboard_defaults.json")
+
+
+def _read_onboard_defaults() -> dict:
+    path = _onboard_state_path()
+    try:
+        with open(path, "r", encoding="utf-8") as fp:
+            data = json.load(fp)
+        if isinstance(data, dict):
+            return data
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    return {}
+
+
+def _write_onboard_defaults(payload: dict) -> None:
+    os.makedirs(os.path.dirname(_onboard_state_path()), exist_ok=True)
+    with open(_onboard_state_path(), "w", encoding="utf-8") as fp:
+        json.dump(payload, fp, indent=2)
+        fp.write("\n")
+
+
+def _prompt_or_default(prompt: str, default: str, non_interactive: bool) -> str:
+    if non_interactive:
+        return default
+    value = input(f"{prompt} [{default}]: ").strip()
+    return value or default
+
+
+def _prompt_yes_no(message: str, default: bool, non_interactive: bool) -> bool:
+    if non_interactive:
+        return default
+    suffix = " [Y/n]" if default else " [y/N]"
+    value = input(f"{message}{suffix}: ").strip().lower()
+    if not value:
+        return default
+    if value in {"y", "yes"}:
+        return True
+    if value in {"n", "no"}:
+        return False
+    return default
+
+
+def _parse_csv_indices(raw: str) -> list[int]:
+    if not raw:
+        return []
+    out: list[int] = []
+    for item in raw.replace(",", " ").split():
+        token = item.strip().lower()
+        if not token:
+            continue
+        if token in {"all", "a"}:
+            out.append(-1)
+            continue
+        try:
+            out.append(int(token))
+        except ValueError:
+            pass
+    return out
+
+
+def _runtime_shadow_conflict_detected() -> tuple[bool, str]:
+    try:
+        import doctor
+
+        status, detail = doctor.check_runtime_shadowed_stdlib()
+        return status != "ok", detail
+    except Exception:
+        return False, ""
+
+
+def _maybe_repair_runtime_conflict(non_interactive: bool, emit) -> bool:
+    """Attempt automatic repair after user confirmation when supported."""
+    conflict, _ = _runtime_shadow_conflict_detected()
+    if not conflict:
+        return False
+
+    if non_interactive:
+        emit("  ⚠️  Runtime shadowing detected (use `synapse doctor --fix` to repair).")
+        return False
+
+    from doctor import _apply_doctor_fix
+
+    if not _prompt_yes_no("Runtime conflict detected. Run auto-repair now?", True, False):
+        return False
+
+    _apply_doctor_fix(None)
+    emit("  🔧 Repaired runtime configuration for configured integrations.")
+    return True
 
 def _check_store_files(db_path: str) -> list[tuple[str, str, str]]:
     checks: list[tuple[str, str, str]] = []
@@ -2677,61 +2772,15 @@ def cmd_integrations(args):
 
 
 def _load_policy_receipts(last: int, db_path: str) -> tuple[list[dict[str, Any]], str]:
-    candidates = [
-        os.path.join(os.path.dirname(os.path.abspath(db_path)), "permit_receipts.jsonl"),
-        os.path.join(os.path.dirname(os.path.abspath(db_path)), "receipts", "permit_receipts.jsonl"),
-        os.path.expanduser("~/.synapse/permit_receipts.jsonl"),
-    ]
-
-    records: list[dict[str, Any]] = []
-    source = ""
-    for path in candidates:
-        if not os.path.exists(path):
-            continue
-        source = path
-        with open(path, "r", encoding="utf-8") as fp:
-            for line in fp:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    payload = json.loads(line)
-                    if isinstance(payload, dict):
-                        records.append(payload)
-                except json.JSONDecodeError:
-                    continue
-    return records[-last:], source
+    records, source = load_policy_receipts(last=last, db_path=db_path)
+    return records, source
 
 
 def _receipt_skeleton(receipt: dict[str, Any]) -> dict[str, Any]:
-    counts = receipt.get("memory_counts")
-    if not isinstance(counts, dict):
-        counts = {}
-    matched = receipt.get("matched_rules")
-    if not isinstance(matched, list):
-        matched = []
-    reasons = receipt.get("block_reasons")
-    if not isinstance(reasons, list):
-        reasons = []
-
-    return {
-        "receipt_id": str(receipt.get("receipt_id", "")),
-        "decision": str(receipt.get("decision", "unknown")).lower(),
-        "actor_id": str(receipt.get("actor_id", "")),
-        "app_id": str(receipt.get("app_id", "")),
-        "purpose": str(receipt.get("purpose", "")),
-        "scope_requested": str(receipt.get("scope_requested", "")),
-        "scope_applied": str(receipt.get("scope_applied", "")),
-        "policy_id": str(receipt.get("policy_id", "")),
-        "matched_rules": [str(item) for item in matched],
-        "memory_counts": {
-            "considered": int(counts.get("considered", 0) or 0),
-            "returned": int(counts.get("returned", 0) or 0),
-            "blocked": int(counts.get("blocked", 0) or 0),
-        },
-        "block_reasons": [str(item) for item in reasons],
-        "timestamp": str(receipt.get("timestamp", "")),
-    }
+    normalized = normalize_receipt(receipt)
+    if "receipt_id" in normalized:
+        normalized["receipt_id"] = str(normalized["receipt_id"])
+    return normalized
 
 
 def _format_receipt_human(item: dict[str, Any]) -> list[str]:
@@ -2851,6 +2900,8 @@ def cmd_install(args):
 
 def cmd_onboard(args):
     from installer import ClientInstaller, _resolve_db_path as _installer_resolve_db
+    from policies import PRESETS
+    from service import install_service
 
     db_path = _installer_resolve_db(args.db or APPLIANCE_DB_DEFAULT)
     flow = getattr(args, "flow", "advanced") or "advanced"
@@ -2861,83 +2912,114 @@ def cmd_onboard(args):
         if not json_output:
             print(*_args, **_kwargs)
 
+    defaults = _read_onboard_defaults()
     detected = _detect_client_installs()
     candidates = [entry for entry in detected if entry[0] in ClientInstaller.ENHANCED_TARGETS]
 
     emit(_bold("🧭 Synapse Onboarding Wizard"))
     emit()
-    emit("Step 1: detect installed clients")
 
+    emit("Step 1: detect installed clients")
     if not candidates:
         emit("  ℹ️  No client apps detected on this system.")
     else:
         for idx, (_key, name, app_detected, configured) in enumerate(candidates, 1):
             status = "configured" if configured else "not configured"
-            emit(
-                f"  [{idx}] {name}: {'✅ installed' if app_detected else '⬜ not detected'} "
-                f"({status})"
-            )
+            emit(f"  [{idx}] {name}: {'✅ installed' if app_detected else '⬜ not detected'} ({status})")
 
-    selected: list[int] = []
-    if not candidates:
-        emit("     You can configure later with: synapse install <client>")
-    elif non_interactive or flow == "quickstart":
-        selected = [idx for idx, item in enumerate(candidates, 1) if item[2] and not item[3]]
-        if not selected:
-            selected = [idx for idx, item in enumerate(candidates, 1) if item[2]]
-        emit(f"\nSelected clients (auto): {', '.join(str(i) for i in selected) if selected else 'none'}")
+    # Step 2: policy template
+    emit(_cyan("\nStep 2: pick a policy template"))
+    policy_map = {"1": "minimal", "2": "private", "3": "work", "4": "ephemeral"}
+    policy_default = defaults.get("policy", "private")
+    policy_default_key = next((k for k, v in policy_map.items() if v == policy_default), "2")
+    policy_choice = getattr(args, "policy_template", None)
+    if policy_choice:
+        if policy_choice == "skip":
+            policy_choice = "s"
+        if policy_choice in policy_map.values():
+            policy_choice = next(k for k, v in policy_map.items() if v == policy_choice)
     else:
-        options = [idx for idx, item in enumerate(candidates, 1) if item[2]]
-        pending = [idx for idx in options if not candidates[idx - 1][3]]
-        default = ",".join(str(i) for i in pending) if pending else (",".join(str(i) for i in options) if options else "")
+        if non_interactive:
+            policy_choice = _prompt_or_default(
+                "Template [1=minimal, 2=private, 3=work, 4=ephemeral, s=skip]",
+                policy_default_key,
+                True,
+            )
+        else:
+            policy_choice = _prompt_or_default(
+                "Template [1=minimal, 2=private, 3=work, 4=ephemeral, s=skip]",
+                policy_default_key,
+                False,
+            ).strip().lower()
 
+    selected_policy = None
+    if policy_choice in policy_map:
+        selected_policy = policy_map[policy_choice]
+    elif policy_choice not in {"s", "skip", "0", ""} and policy_choice in PRESETS:
+        selected_policy = policy_choice
+
+    if selected_policy:
+        emit(f"  ✅ Selected policy template: {selected_policy}")
+    else:
+        emit("  ⬜ Skipping policy template setup")
+
+    # Step 3: integration selection
+    emit(_cyan("\nStep 3: select integrations to configure"))
+    selected: list[int] = []
+    options = [idx for idx, item in enumerate(candidates, 1) if item[2]]
+    pending = [idx for idx in options if not candidates[idx - 1][3]]
+
+    if not candidates:
+        emit("  No detected clients to configure.")
+    elif non_interactive or flow == "quickstart":
+        selected = pending or options
+        if not selected:
+            selected = []
+        emit(f"  Auto-selected clients: {', '.join(str(i) for i in selected) if selected else 'none'}")
+    else:
+        default = ",".join(str(i) for i in (pending or options))
         if pending:
-            emit(f"\nDetected clients not yet configured: {', '.join(str(i) for i in pending)}")
+            emit(f"  Detected clients not yet configured: {', '.join(str(i) for i in pending)}")
             prompt = "Choose clients by number (e.g. 1,3) or press Enter for all pending: "
         elif options:
-            emit("\nDetected clients are already configured.")
+            emit("  Detected clients are already configured.")
             prompt = "Choose clients by number (e.g. 1,3) or press Enter to skip: "
         else:
-            emit("\nNo installed clients detected from the above list.")
+            emit("  No installed clients detected from the above list.")
             prompt = ""
 
         if prompt:
             try:
-                text = input(prompt).strip()
+                text = input(prompt).strip().lower()
             except (EOFError, KeyboardInterrupt):
                 emit("\nCancelled.")
                 return
 
-            if text.lower() in {"", "skip", "s", "none", "n"}:
+            if text in {"", "skip", "s", "none", "n"}:
                 selected = []
             else:
-                raw = [t.strip() for t in text.replace(",", " ").split() if t.strip()]
-                if any(tok.lower() in {"all", "a"} for tok in raw):
+                parsed = _parse_csv_indices(text)
+                if -1 in parsed:
                     selected = options
                 else:
-                    parsed = []
-                    for tok in raw:
-                        try:
-                            idx = int(tok)
-                        except ValueError:
-                            emit(f"Invalid selection: {tok}")
-                            emit("Use numbers like 1 3 or 'all'.")
-                            return
+                    selected = []
+                    for idx in parsed:
                         if idx not in options:
                             emit(f"Selection out of range: {idx}")
                             return
-                        parsed.append(idx)
-                    selected = sorted(set(parsed))
+                        selected.append(idx)
+                    selected = sorted(set(selected))
 
-        if not default:
-            selected = []
-        elif not selected:
-            selected = [int(x) for x in default.split(",") if x]
+            if not selected and not default:
+                selected = []
+            elif not selected:
+                selected = [int(x) for x in default.split(",") if x]
 
     target_map = {i: item for i, item in enumerate(candidates, 1)}
     configured_results = []
+
     if selected:
-        emit(_cyan("\nStep 2: configuring selected clients"))
+        emit(_cyan("\nStep 4: configuring selected clients"))
         for idx in selected:
             key, name, _, _ = target_map[idx]
             emit(f"\n  -> {name}")
@@ -2954,18 +3036,80 @@ def cmd_onboard(args):
             emit(f"    {'✅' if ok else '⚠️'} {'installed' if ok else 'installation may need attention'}")
             configured_results.append({"name": key, "configured": bool(ok), "error": None if ok else "installation may need attention"})
     else:
-        emit("\nStep 2: skipping client configuration")
+        emit("\nStep 4: skipping client configuration")
 
-    emit(_cyan("\nStep 3: verifying local store path"))
+    # Step 5: storage defaults
+    emit(_cyan("\nStep 5: storage defaults"))
+    db_default = _prompt_or_default("  Store path", defaults.get("db_path", db_path), non_interactive)
+    db_path = _installer_resolve_db(db_default)
+
+    scope_default = defaults.get("default_scope", "private")
+    valid_scope = {"private", "shared", "public"}
+    selected_scope = _prompt_or_default("  Default scope for new memories [private/shared/public]", defaults.get("default_scope", scope_default), non_interactive).strip().lower()
+    if selected_scope not in valid_scope:
+        selected_scope = "private"
+    selected_scope = getattr(args, "default_scope", None) or selected_scope
+
+    sensitive_default = defaults.get("default_sensitive", True)
+    selected_sensitive = True if sensitive_default else False
+    sensitive_arg = getattr(args, "default_sensitive", None)
+    if sensitive_arg is not None:
+        selected_sensitive = (sensitive_arg == "on")
+    elif not non_interactive:
+        selected_sensitive = _prompt_yes_no("  Enable sensitive protection by default", bool(sensitive_default), False)
+
+    emit(f"  ✅ Storage: {db_path}")
+    emit(f"  ✅ Default scope: {selected_scope}")
+    emit(f"  ✅ Sensitive protection enabled: {'yes' if selected_sensitive else 'no'}")
+
+    # Step 6: optional background service
+    emit(_cyan("\nStep 6: background service"))
+    service_selected = bool(getattr(args, "service", False))
+    if not non_interactive:
+        service_selected = _prompt_yes_no("Enable background service on login", service_selected, False)
+
+    service_status = {"requested": service_selected, "installed": False, "path": ""}
+    if service_selected:
+        service_path = install_service(db_path, sleep_schedule=getattr(args, "service_schedule", "daily"))
+        service_status["path"] = service_path
+        if service_path:
+            service_status["installed"] = True
+        else:
+            emit("  ⚠️  Service hook unavailable on this platform in this environment.")
+            emit("     Use 'synapse service install' manually after setup.")
+
+    _write_onboard_defaults({
+        "policy": selected_policy,
+        "selected_integrations": [candidates[idx - 1][0] for idx in sorted(set(selected))],
+        "db_path": db_path,
+        "default_scope": selected_scope,
+        "default_sensitive": selected_sensitive,
+        "service": service_status,
+    })
+
+    emit(_cyan("\nStep 7: verifying local store path"))
     passed, probe_status = _run_onboard_probe(db_path)
+    repaired = False
+    if not passed:
+        repaired = _maybe_repair_runtime_conflict(non_interactive, emit)
+        if repaired:
+            passed, probe_status = _run_onboard_probe(db_path)
 
     if json_output:
         print(json.dumps({
             "flow": flow,
             "non_interactive": non_interactive,
             "db_path": db_path,
-            "selected": [candidates[idx - 1][0] for idx in selected],
+            "policy": selected_policy,
+            "selected_integrations": [candidates[idx - 1][0] for idx in sorted(set(selected))],
+            "storage": {
+                "path": db_path,
+                "default_scope": selected_scope,
+                "default_sensitive": selected_sensitive,
+            },
+            "service": service_status,
             "configured": configured_results,
+            "repair_attempted": repaired,
             "probe": {
                 "passed": passed,
                 "details": probe_status,
@@ -2987,7 +3131,8 @@ def cmd_onboard(args):
         emit("  Fix steps:")
         emit("     1) Verify your data path is writable: --db")
         emit("     2) Re-run: synapse install <client>")
-        emit("     3) Run: synapse doctor")
+        emit("     3) Run one-command repair: synapse doctor --fix")
+        emit("     4) Retry onboarding with same command")
         emit(_yellow("\nOnboarding completed with issues."))
 
 def cmd_start(args):
@@ -3814,6 +3959,11 @@ def main():
         help='Run without prompts (uses non-destructive defaults)',
     )
     p.add_argument('--json', action='store_true', help='Emit machine-readable JSON output')
+    p.add_argument('--policy-template', choices=['minimal', 'private', 'work', 'ephemeral', 'skip'], help='Preselect policy template for onboarding')
+    p.add_argument('--default-scope', choices=['private', 'shared', 'public'], help='Default memory scope for onboarding probe defaults')
+    p.add_argument('--default-sensitive', dest='default_sensitive', choices=['on', 'off'], help='Default sensitive protection for onboarding defaults')
+    p.add_argument('--enable-service', dest='service', action='store_true', help='Install background service during onboarding')
+    p.add_argument('--service-schedule', default='daily', choices=['daily', 'hourly', 'off'], help='Background service schedule')
 
     p_integrations = subparsers.add_parser('integrations', help='Manage client integrations')
     p_integrations.add_argument('--db', default=APPLIANCE_DB_DEFAULT, help='Synapse database path')

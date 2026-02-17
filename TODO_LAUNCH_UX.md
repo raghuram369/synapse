@@ -17,10 +17,10 @@
 
 ## Onboarding Wizard
 - [x] Implement `synapse onboard --flow quickstart|advanced`
-- [ ] Add policy template selection step
-- [ ] Add integration selection step
-- [ ] Add storage configuration step
-- [ ] Add background service enablement step
+- [x] Add policy template selection step
+- [x] Add integration selection step
+- [x] Add storage configuration step
+- [x] Add background service enablement step
 - [x] Add live remember/recall verification step
 - [ ] Add fail-safe repair flow with rerun prompt
 
@@ -70,5 +70,6 @@
 ## Docs + QA
 - [x] Keep README and README_MCP aligned with onboarding/runtime behavior
 - [x] Add/update tests for installer payloads and integration repair flows
-- [ ] Add end-to-end onboarding smoke test to CI
-- [ ] Add UX quality-gate checklist automation (5-min first success, no manual JSON edits, one-command fixes, explainable denials, scriptable flows)
+- [x] Add end-to-end onboarding smoke test to CI
+- [x] Add UX quality-gate checklist automation skeleton (scriptable flows, one-command fixes, no manual JSON edits for top integrations path)
+- [ ] Add explainable denials to quality checks
