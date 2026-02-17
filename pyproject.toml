@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "synapse-ai-memory"
-version = "0.12.1"
+version = "0.12.2"
 description = "A neuroscience-inspired memory engine for AI agents featuring private vaults, smart inbox review, and natural-language forgetting. Portable, federated, and zero-dependency."
 authors = [{name = "Raghuram Parvataneni"}]
 readme = "README.md"
@@ -30,6 +30,7 @@ requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
+mcp = ["mcp>=1.0.0"]
 langchain = ["langchain>=0.1.0", "langchain-core>=0.1.0"]
 langgraph = ["langgraph>=0.0.1"]
 crewai = ["crewai>=0.1.0"]

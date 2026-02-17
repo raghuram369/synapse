@@ -33,21 +33,38 @@ def _resolve_db_path(db_path: str) -> str:
     return os.path.abspath(db_path)
 
 
+def _mcp_command() -> List[str]:
+    """Return the best command to launch synapse-mcp.
+
+    Prefers uvx (isolated, no PATH issues) > synapse-mcp entry point > python3 + file.
+    """
+    import shutil
+
+    if shutil.which("uvx"):
+        return ["uvx", "--from", "synapse-ai-memory[mcp]", "synapse-mcp"]
+    if shutil.which("synapse-mcp"):
+        return ["synapse-mcp"]
+    # Fallback: use the current python interpreter + module file
+    return [sys.executable, _mcp_server_path()]
+
+
 def _mcp_payload(db_path: str) -> Dict[str, Any]:
     db_path = _resolve_db_path(db_path)
+    cmd = _mcp_command()
     return {
-        "command": "synapse-mcp",
-        "args": ["--db", db_path],
+        "command": cmd[0],
+        "args": cmd[1:] + ["--db", db_path],
     }
 
 
 def _continue_payload(db_path: str) -> Dict[str, Any]:
     db_path = _resolve_db_path(db_path)
+    cmd = _mcp_command()
     return {
         "transport": {
             "type": "stdio",
-            "command": "synapse-mcp",
-            "args": ["--db", db_path],
+            "command": cmd[0],
+            "args": cmd[1:] + ["--db", db_path],
         }
     }
 
@@ -298,8 +315,28 @@ def _install_openclaw_into(path_root: str, print_message: str) -> None:
     print(print_message)
 
 
+def _ensure_mcp_package():
+    """Ensure the 'mcp' package is installed (required for synapse-mcp server)."""
+    try:
+        import mcp  # noqa: F401
+        return
+    except ImportError:
+        pass
+    print("Installing mcp package (required for MCP server)...")
+    try:
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "mcp>=1.0.0"],
+            stdout=subprocess.DEVNULL,
+        )
+        print("mcp package installed.")
+    except subprocess.CalledProcessError:
+        print("WARNING: Could not install 'mcp' package automatically.")
+        print("  Run manually: pip install 'mcp>=1.0.0'")
+
+
 def install_claude(db_path):
     """Auto-configure Claude Desktop MCP."""
+    _ensure_mcp_package()
     config_path = _claude_config_path()
     config = _read_json(config_path)
     if os.path.exists(config_path):
@@ -311,6 +348,7 @@ def install_claude(db_path):
 
 def install_cursor(db_path):
     """Auto-configure Cursor MCP settings."""
+    _ensure_mcp_package()
     config_path = _resolve_path(_cursor_candidates())
     config = _read_json(config_path)
     if os.path.exists(config_path):
@@ -322,6 +360,7 @@ def install_cursor(db_path):
 
 def install_windsurf(db_path):
     """Auto-configure Windsurf MCP settings."""
+    _ensure_mcp_package()
     config_path = _resolve_path(_windsurf_candidates())
     config = _read_json(config_path)
     if os.path.exists(config_path):
