@@ -1,0 +1,41 @@
+{
+  "$schema": "https://modelcontextprotocol.io/schemas/registry-manifest.json",
+  "version": "1.0.0",
+  "name": "synapse",
+  "display_name": "Synapse AI Memory",
+  "description": "Privacy-first local memory MCP server for Claude Desktop, Cursor, Windsurf, and MCP clients.",
+  "homepage": "https://github.com/raghuram369/synapse",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/raghuram369/synapse.git"
+  },
+  "license": "MIT",
+  "keywords": ["memory", "privacy", "ai", "mcp", "agents"],
+  "version_range": ">=0.12.4",
+  "runtime": {
+    "type": "python",
+    "entrypoint": {
+      "command": "synapse-mcp",
+      "args": ["--data-dir", "~/.synapse"]
+    },
+    "environment": {
+      "SYNAPSE_AUTO_INSTALL": "1"
+    }
+  },
+  "install": {
+    "linux": {
+      "method": "pip",
+      "command": "pip install synapse-ai-memory==0.12.4"
+    },
+    "darwin": {
+      "method": "pip",
+      "command": "pip install synapse-ai-memory==0.12.4"
+    },
+    "windows": {
+      "method": "pip",
+      "command": "python -m pip install synapse-ai-memory==0.12.4"
+    }
+  },
+  "docs_url": "https://github.com/raghuram369/synapse/blob/main/README_MCP.md",
+  "support_url": "https://github.com/raghuram369/synapse/issues"
+}

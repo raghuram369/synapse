@@ -58,14 +58,14 @@
 - [ ] Tier 2 roadmap stubs (AutoGen, Google ADK, LlamaIndex)
 
 ## Ecosystem Assets + Distribution
-- [ ] Publish MCP server metadata to MCP Registry
-- [ ] Create starter repos (openai/langgraph/claude-mcp)
-- [ ] Add compatibility matrix (OS/runtime/limitations)
-- [ ] Add changelog section for breaking integration changes
+- [x] Publish MCP server metadata to MCP Registry
+- [x] Create starter repos (openai/langgraph/claude-mcp)
+- [x] Add compatibility matrix (OS/runtime/limitations)
+- [x] Add changelog section for breaking integration changes
 - [ ] Add public benchmark safety/utility card
-- [ ] Add installer docs for CI/non-interactive mode
-- [ ] Add Python + TypeScript onboarding examples
-- [ ] Add deep-link install pages for major clients
+- [x] Add installer docs for CI/non-interactive mode
+- [x] Add Python + TypeScript onboarding examples
+- [x] Add deep-link install pages for major clients
 
 ## Docs + QA
 - [x] Keep README and README_MCP aligned with onboarding/runtime behavior
