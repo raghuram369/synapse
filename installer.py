@@ -53,7 +53,7 @@ def _mcp_payload(db_path: str) -> Dict[str, Any]:
     cmd = _mcp_command()
     return {
         "command": cmd[0],
-        "args": cmd[1:] + ["--db", db_path],
+        "args": cmd[1:] + ["--data-dir", db_path],
     }
 
 
@@ -64,7 +64,7 @@ def _continue_payload(db_path: str) -> Dict[str, Any]:
         "transport": {
             "type": "stdio",
             "command": cmd[0],
-            "args": cmd[1:] + ["--db", db_path],
+            "args": cmd[1:] + ["--data-dir", db_path],
         }
     }
 
