@@ -51,8 +51,8 @@
 - [ ] Add portability panel (export/import preview + policy diff + signature verify)
 
 ## Connector Ecosystem
-- [ ] Define connector metadata schema + validation
-- [ ] Implement connector contract surface: install/verify/test/repair/uninstall/doctor_checks/example_prompt
+- [x] Define connector metadata schema + validation
+- [x] Implement connector contract surface: install/verify/test/repair/uninstall/doctor_checks/example_prompt
 - [ ] Tier 0: first-class support quality bar (Claude, Cursor, OpenAI, LangGraph, LangChain)
 - [ ] Tier 1 launch-window support (Windsurf, Continue, CrewAI, OpenClaw)
 - [ ] Tier 2 roadmap stubs (AutoGen, Google ADK, LlamaIndex)

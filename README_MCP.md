@@ -83,6 +83,29 @@ Integration maintenance commands:
 - `synapse integrations repair <name>`
 - `synapse integrations open <name>`
 
+Connector contract surface (scaffolded):
+- `synapse integrations list --json` now includes contract metadata (`type`, `tier`, `commands`, `capabilities`, `example_prompt`) for supported built-in connectors.
+- `commands` currently reports action support for: `install`, `verify`, `test`, `repair`, `uninstall`, `doctor_checks`.
+
+Example fields:
+```json
+{
+  "id": "langchain",
+  "type": "library",
+  "tier": "tier-0",
+  "commands": {
+    "install": false,
+    "verify": false,
+    "test": false,
+    "repair": false,
+    "uninstall": false,
+    "doctor_checks": false
+  },
+  "capabilities": ["memory", "chat_history", "vectorstore"],
+  "example_prompt": "Use SynapseMemory/SynapseChatMessageHistory in a LangChain flow"
+}
+```
+
 Policy receipts CLI:
 - `synapse permit receipts --last 3`
 - `synapse permit receipts --last 3 --json`

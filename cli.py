@@ -2662,8 +2662,11 @@ def _integration_open_target(name: str) -> tuple[str, str]:
     raise ValueError(f"Unknown integration: {name}")
 
 
-def _integration_rows(db_path: str) -> list[dict[str, str]]:
+def _integration_rows(db_path: str) -> list[dict[str, object]]:
+    from integrations.contract import contracts as connector_contracts
+
     detected_lookup = {key: (detected, configured) for key, _name, detected, configured in _detect_client_installs()}
+    by_id = {c.id: c for c in connector_contracts()}
 
     def _last_check(path: str) -> str:
         if not path or not os.path.exists(path):
@@ -2680,9 +2683,8 @@ def _integration_rows(db_path: str) -> list[dict[str, str]]:
             return f"{int(age // 3600)}h ago"
         return f"{int(age // 86400)}d ago"
 
-    rows = []
-    for key in INTEGRATION_KEYS:
-        label = INTEGRATION_LABELS[key]
+    def _client_row(key: str, contract: Any) -> dict[str, object]:
+        label = INTEGRATION_LABELS.get(key, contract.label)
         detected, configured = detected_lookup.get(key, (False, False))
         if configured:
             status = "healthy"
@@ -2702,17 +2704,48 @@ def _integration_rows(db_path: str) -> list[dict[str, str]]:
             actions = "install"
             last_check = "--"
 
-        rows.append({
+        return {
+            "id": key,
             "name": key,
             "label": label,
-            "type": INTEGRATION_TYPES.get(key, "Integration"),
+            "type": INTEGRATION_TYPES.get(key, contract.type),
+            "tier": contract.tier,
             "status": status,
             "last_check": last_check,
             "actions": actions,
+            "commands": contract.commands,
+            "capabilities": contract.capabilities,
+            "example_prompt": contract.example_prompt,
             "detected": "yes" if detected else "no",
             "configured": "yes" if configured else "no",
             "db": db_path,
-        })
+        }
+
+    def _non_client_row(contract: Any) -> dict[str, object]:
+        return {
+            "id": contract.id,
+            "name": contract.id,
+            "label": contract.label,
+            "type": contract.type,
+            "tier": contract.tier,
+            "status": "available",
+            "last_check": "--",
+            "actions": "docs",
+            "commands": contract.commands,
+            "capabilities": contract.capabilities,
+            "example_prompt": contract.example_prompt,
+            "detected": "no",
+            "configured": "no",
+            "db": db_path,
+        }
+
+    rows = []
+    for key in sorted(by_id):
+        contract = by_id[key]
+        if key in INTEGRATION_KEYS:
+            rows.append(_client_row(key, contract))
+        else:
+            rows.append(_non_client_row(contract))
     return rows
 
 
@@ -2735,6 +2768,14 @@ def cmd_integrations(args):
         print("-" * 72)
         for row in rows:
             print(f"{row['label']:<16} {row['type']:<12} {row['status']:<14} {row['last_check']:<10} {row['actions']}")
+            caps = row.get("capabilities", [])
+            if caps:
+                print(f"  capabilities: {', '.join(caps)}")
+            contract_cmds = row.get("commands")
+            if isinstance(contract_cmds, dict):
+                implemented = sorted([name for name, ok in contract_cmds.items() if ok])
+                if implemented:
+                    print(f"  contract actions: {', '.join(implemented)}")
         print("\nNext steps: synapse integrations install <name> | test <name> | repair <name> | open <name>")
         return
 
