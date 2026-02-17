@@ -150,10 +150,12 @@ class TestOnboardDefaultsFlow(unittest.TestCase):
 
         fake_installer = MagicMock(return_value=True)
 
-        with patch.object(cli, "_detect_client_installs", return_value=detect_result), \
-                patch.object(cli, "_write_onboard_defaults", return_value=None), \
-                patch("installer.ClientInstaller.ENHANCED_TARGETS", {"claude": fake_installer}), \
-                patch.object(cli, "_run_onboard_probe", return_value=(True, {"start_count": "1", "end_count": "2"})):
+        with (
+            patch.object(cli, "_detect_client_installs", return_value=detect_result),
+            patch.object(cli, "_write_onboard_defaults", return_value=None),
+            patch("installer.ClientInstaller.ENHANCED_TARGETS", {"claude": fake_installer}),
+            patch.object(cli, "_run_onboard_probe", return_value=(True, {"start_count": "1", "end_count": "2"})),
+        ):
             out = _run_cmd(cli.cmd_onboard, args)
 
         payload = json.loads(out)
@@ -161,6 +163,49 @@ class TestOnboardDefaultsFlow(unittest.TestCase):
         self.assertEqual(payload["storage"]["default_scope"], "public")
         self.assertFalse(payload["storage"]["default_sensitive"])
         self.assertEqual(payload["selected_integrations"], ["claude"])
+
+    def test_parse_csv_indices_supports_ranges_and_tokens(self):
+        indices = cli._parse_csv_indices("1,2-4, 6")
+        self.assertEqual(indices, [1, 2, 3, 4, 6])
+
+        indices = cli._parse_csv_indices("a")
+        self.assertEqual(indices, [-1])
+
+        indices = cli._parse_csv_indices("2;5 ; all")
+        self.assertEqual(indices, [2, -1])
+
+    def test_onboard_quickstart_uses_zero_prompt_defaults(self):
+        args = argparse.Namespace(
+            db="/tmp/synapse_db",
+            flow="quickstart",
+            non_interactive=False,
+            json=False,
+            policy_template=None,
+            default_scope=None,
+            default_sensitive=None,
+            service=False,
+            service_schedule="daily",
+        )
+
+        detect_result = [
+            ("claude", "Claude Desktop", True, False),
+            ("cursor", "Cursor", True, False),
+        ]
+
+        fake_installer = MagicMock(return_value=True)
+
+        with (
+            patch.object(cli, "_detect_client_installs", return_value=detect_result),
+            patch.object(cli, "_write_onboard_defaults", return_value=None),
+            patch("installer.ClientInstaller.ENHANCED_TARGETS", {"claude": fake_installer, "cursor": fake_installer}),
+            patch.object(cli, "_run_onboard_probe", return_value=(True, {"start_count": "1", "end_count": "2"})),
+            patch("builtins.input", side_effect=AssertionError("input should not run")),
+        ):
+            out = _run_cmd(cli.cmd_onboard, args)
+
+        self.assertIn("Quickstart preset", out)
+        self.assertIn("Auto-selected clients", out)
+        self.assertIn("Step 4: configuring", out)
 
     def test_onboard_interactive_integration_prompt_selection(self):
         args = argparse.Namespace(
@@ -182,15 +227,44 @@ class TestOnboardDefaultsFlow(unittest.TestCase):
 
         fake_installer = MagicMock(return_value=True)
 
-        with patch.object(cli, "_detect_client_installs", return_value=detect_result), \
-                patch("installer.ClientInstaller.ENHANCED_TARGETS", {"claude": fake_installer, "cursor": fake_installer}), \
-                patch("service.install_service", return_value="/tmp/synapse_service.plist"), \
-                patch.object(cli, "_run_onboard_probe", return_value=(True, {"start_count": "1", "end_count": "2"}),) , \
-                patch("builtins.input", side_effect=["2", "1", "", "", "", ""]):
+        with (
+            patch.object(cli, "_detect_client_installs", return_value=detect_result),
+            patch("installer.ClientInstaller.ENHANCED_TARGETS", {"claude": fake_installer, "cursor": fake_installer}),
+            patch("service.install_service", return_value="/tmp/synapse_service.plist"),
+            patch.object(cli, "_run_onboard_probe", return_value=(True, {"start_count": "1", "end_count": "2"})),
+            patch("builtins.input", side_effect=["2", "1", "", "", "", ""]),
+        ):
             out = _run_cmd(cli.cmd_onboard, args)
 
         fake_installer.assert_called_once()
         self.assertIn("Step 7", out)
+
+    def test_service_enable_with_json_remains_pure_payload(self):
+        args = argparse.Namespace(
+            db="/tmp/synapse_db",
+            flow="advanced",
+            non_interactive=True,
+            json=True,
+            policy_template="private",
+            default_scope="private",
+            default_sensitive="on",
+            service=True,
+            service_schedule="daily",
+        )
+
+        with (
+            patch.object(cli, "_detect_client_installs", return_value=[]),
+            patch.object(cli, "_write_onboard_defaults", return_value=None),
+            patch.object(cli, "_run_onboard_probe", return_value=(True, {"start_count": "3", "end_count": "4"})),
+            patch("service.install_service", return_value="/tmp/synapse_service.plist") as install_mock,
+        ):
+            out = _run_cmd(cli.cmd_onboard, args)
+
+        payload = json.loads(out)
+        self.assertEqual(payload["service"]["requested"], True)
+        self.assertEqual(payload["service"]["installed"], True)
+        self.assertEqual(payload["service"]["path"], "/tmp/synapse_service.plist")
+        install_mock.assert_called_once_with("/tmp/synapse_db", sleep_schedule="daily", quiet=True)
 
     def test_onboard_runtime_conflict_triggers_probe_retest(self):
         args = argparse.Namespace(
@@ -209,18 +283,20 @@ class TestOnboardDefaultsFlow(unittest.TestCase):
             ("claude", "Claude Desktop", False, False),
         ]
 
-        with patch.object(cli, "_detect_client_installs", return_value=detect_result), \
-                patch.object(cli, "_write_onboard_defaults", return_value=None), \
-                patch.object(
-                    cli,
-                    "_run_onboard_probe",
-                    side_effect=[
-                        (False, {"error": "probe failed"}),
-                        (True, {"start_count": "1", "end_count": "2"}),
-                    ],
-                ), \
-                patch.object(cli, "_maybe_repair_runtime_conflict", return_value=True), \
-                patch("builtins.input", side_effect=["", "", "", ""]):
+        with (
+            patch.object(cli, "_detect_client_installs", return_value=detect_result),
+            patch.object(cli, "_write_onboard_defaults", return_value=None),
+            patch.object(
+                cli,
+                "_run_onboard_probe",
+                side_effect=[
+                    (False, {"error": "probe failed"}),
+                    (True, {"start_count": "1", "end_count": "2"}),
+                ],
+            ),
+            patch.object(cli, "_maybe_repair_runtime_conflict", return_value=True),
+            patch("builtins.input", side_effect=["", "", "", ""]),
+        ):
             out = _run_cmd(cli.cmd_onboard, args)
 
         payload = json.loads(out)

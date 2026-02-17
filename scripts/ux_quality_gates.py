@@ -134,7 +134,7 @@ def check_json_flow_is_output_only_no_stdout_noise() -> GateResult:
             policy_template="private",
             default_scope="private",
             default_sensitive="on",
-            service=False,
+            service=True,
             service_schedule="daily",
         )
 
@@ -149,6 +149,7 @@ def check_json_flow_is_output_only_no_stdout_noise() -> GateResult:
                 return_value=[],
             ), \
                 patch.object(cli, "_write_onboard_defaults", return_value=None), \
+                patch("service.install_service", return_value="/tmp/synapse_service.plist"), \
                 patch.object(
                     cli,
                     "_run_onboard_probe",
@@ -163,8 +164,12 @@ def check_json_flow_is_output_only_no_stdout_noise() -> GateResult:
         return False, f"Expected pure JSON output with --json, parse failed: {exc}"
 
     service = payload.get("service", {})
-    if service.get("requested") is not False:
-        return False, "Service should not be requested in this JSON-only smoke scenario"
+    if service.get("requested") is not True:
+        return False, "Service should be requested in this JSON-only smoke scenario"
+    if service.get("installed") is not True:
+        return False, "Service installation result missing in payload"
+    if not output.strip().startswith('{'):
+        return False, "Output is not JSON-only"
 
     return True, "OK"
 

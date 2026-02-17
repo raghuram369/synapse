@@ -530,17 +530,27 @@ def _parse_csv_indices(raw: str) -> list[int]:
     if not raw:
         return []
     out: list[int] = []
-    for item in raw.replace(",", " ").split():
-        token = item.strip().lower()
+    tokens = raw.replace(",", " ").replace(";", " ").split()
+    for token in tokens:
+        token = token.strip().lower()
         if not token:
             continue
         if token in {"all", "a"}:
             out.append(-1)
             continue
-        try:
+        if "-" in token:
+            start_text, end_text = token.split("-", 1)
+            if not (start_text.isdigit() and end_text.isdigit()):
+                continue
+            start = int(start_text)
+            end = int(end_text)
+            if start <= 0 or end <= 0:
+                continue
+            step = 1 if end >= start else -1
+            out.extend(range(start, end + step, step))
+            continue
+        if token.isdigit():
             out.append(int(token))
-        except ValueError:
-            pass
     return out
 
 
@@ -2918,6 +2928,7 @@ def cmd_onboard(args):
     flow = getattr(args, "flow", "advanced") or "advanced"
     non_interactive = bool(getattr(args, "non_interactive", False))
     json_output = bool(getattr(args, "json", False))
+    auto_inputs = non_interactive or flow == "quickstart"
 
     def emit(*_args, **_kwargs):
         if not json_output:
@@ -2947,15 +2958,17 @@ def cmd_onboard(args):
     if policy_choice:
         if policy_choice == "skip":
             policy_choice = "s"
-        if policy_choice in policy_map.values():
-            policy_choice = next(k for k, v in policy_map.items() if v == policy_choice)
+        elif policy_choice in policy_map:
+            pass
+        else:
+            # Support passing raw preset names directly in argv
+            if policy_choice in PRESETS:
+                policy_choice = next((k for k, v in policy_map.items() if v == policy_choice), "")
     else:
-        if non_interactive:
-            policy_choice = _prompt_or_default(
-                "Template [1=minimal, 2=private, 3=work, 4=ephemeral, s=skip]",
-                policy_default_key,
-                True,
-            )
+        if auto_inputs:
+            policy_choice = policy_default_key
+            if flow == "quickstart":
+                emit(f"  Quickstart preset: {policy_map.get(policy_choice, policy_default)}")
         else:
             policy_choice = _prompt_or_default(
                 "Template [1=minimal, 2=private, 3=work, 4=ephemeral, s=skip]",
@@ -2966,8 +2979,9 @@ def cmd_onboard(args):
     selected_policy = None
     if policy_choice in policy_map:
         selected_policy = policy_map[policy_choice]
-    elif policy_choice not in {"s", "skip", "0", ""} and policy_choice in PRESETS:
-        selected_policy = policy_choice
+    elif policy_choice not in {"s", "skip", "0", ""}:
+        if policy_choice in PRESETS:
+            selected_policy = policy_choice
 
     if selected_policy:
         emit(f"  ✅ Selected policy template: {selected_policy}")
@@ -3051,12 +3065,12 @@ def cmd_onboard(args):
 
     # Step 5: storage defaults
     emit(_cyan("\nStep 5: storage defaults"))
-    db_default = _prompt_or_default("  Store path", defaults.get("db_path", db_path), non_interactive)
+    db_default = _prompt_or_default("  Store path", defaults.get("db_path", db_path), auto_inputs)
     db_path = _installer_resolve_db(db_default)
 
     scope_default = defaults.get("default_scope", "private")
     valid_scope = {"private", "shared", "public"}
-    selected_scope = _prompt_or_default("  Default scope for new memories [private/shared/public]", defaults.get("default_scope", scope_default), non_interactive).strip().lower()
+    selected_scope = _prompt_or_default("  Default scope for new memories [private/shared/public]", defaults.get("default_scope", scope_default), auto_inputs).strip().lower()
     if selected_scope not in valid_scope:
         selected_scope = "private"
     selected_scope = getattr(args, "default_scope", None) or selected_scope
@@ -3066,7 +3080,7 @@ def cmd_onboard(args):
     sensitive_arg = getattr(args, "default_sensitive", None)
     if sensitive_arg is not None:
         selected_sensitive = (sensitive_arg == "on")
-    elif not non_interactive:
+    elif not auto_inputs:
         selected_sensitive = _prompt_yes_no("  Enable sensitive protection by default", bool(sensitive_default), False)
 
     emit(f"  ✅ Storage: {db_path}")
@@ -3076,7 +3090,7 @@ def cmd_onboard(args):
     # Step 6: optional background service
     emit(_cyan("\nStep 6: background service"))
     service_selected = bool(getattr(args, "service", False))
-    if not non_interactive:
+    if not auto_inputs:
         service_selected = _prompt_yes_no("Enable background service on login", service_selected, False)
 
     service_status = {"requested": service_selected, "installed": False, "path": ""}
