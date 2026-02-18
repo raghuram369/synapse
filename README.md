@@ -1,4 +1,10 @@
-# Synapse AI Memory
+# Synapse AI Memory (Python — Archived)
+
+> **⚠️ This project has been rewritten in TypeScript. See [synapse-ts](https://github.com/raghuram369/synapse-ts) for the active version.**
+>
+> This repository is archived and no longer maintained.
+
+---
 
 A local-first memory engine for AI agents. Store facts, context, and conversation history in one place, then retrieve them as structured context with policy + privacy controls.
 
